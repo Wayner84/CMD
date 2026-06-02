@@ -2,11 +2,17 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
     <path android:fillColor="#121017" android:pathData="M0,0h108v108h-108z" />
-    <path android:fillColor="#2A2033" android:pathData="M54,8a46,46 0,1 0,0.1 0z" />
-    <path android:strokeColor="#D66BA0" android:strokeWidth="5" android:strokeLineCap="round" android:fillColor="@android:color/transparent" android:pathData="M25,67 C25,42 39,26 55,26 C72,26 83,40 83,55" />
-    <path android:strokeColor="#70D48B" android:strokeWidth="4" android:strokeLineCap="round" android:fillColor="@android:color/transparent" android:pathData="M54,54 L79,54" />
-    <path android:strokeColor="#6EA8FF" android:strokeWidth="4" android:strokeLineCap="round" android:fillColor="@android:color/transparent" android:pathData="M54,54 L54,28" />
-    <path android:strokeColor="#FF6B6B" android:strokeWidth="4" android:strokeLineCap="round" android:fillColor="@android:color/transparent" android:pathData="M54,54 L34,73" />
-    <path android:fillColor="#F7ECF3" android:pathData="M31,83 h46 v8 h-46 z" />
-    <path android:fillColor="#D66BA0" android:pathData="M38,78 h8 v16 h-8 z M53,78 h8 v16 h-8 z M68,78 h8 v16 h-8 z" />
+    <path android:fillColor="#1D1724" android:pathData="M54,4a50,50 0,1 0,0.1 0z" />
+    <path android:strokeColor="#D66BA0" android:strokeWidth="6" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="@android:color/transparent" android:pathData="M54,12a42,42 0,1 0,0.1 0" />
+
+    <!-- Townsend Precision Labs-inspired mark: simplified caliper/CMM probe + stacked cube. -->
+    <path android:fillColor="#D66BA0" android:pathData="M24,43 L24,37 L39,29 C43,27 47,26 52,26 L61,26 C69,26 77,30 80,37 L80,45 L89,45 C91,45 92,46 92,48 L92,55 C92,57 91,58 89,58 L85,58 L81,72 C80,75 76,75 75,72 L71,58 L67,58 C65,58 64,57 64,55 L64,48 C64,46 65,45 67,45 L73,45 L73,37 L63,37 C59,37 57,39 57,43 L57,90 C57,92 55,94 53,94 L48,94 L48,77 L46,77 C44,77 42,75 42,73 L42,61 L24,50 L24,48 L52,48 L52,43 Z" />
+    <path android:fillColor="#D66BA0" android:pathData="M24,52 L45,52 Q47,52 47,54 L47,58 Q47,60 45,60 L24,60 Z" />
+    <path android:fillColor="#121017" android:pathData="M50,58 h15 v2 h-15 z M50,64 h15 v2 h-15 z M50,70 h15 v2 h-15 z M50,76 h15 v2 h-15 z M50,82 h15 v2 h-15 z" />
+
+    <!-- Stacked cube/metrology layers. -->
+    <path android:fillColor="#D66BA0" android:pathData="M62,66 L75,59 L88,66 L75,73 Z" />
+    <path android:fillColor="#121017" android:pathData="M68,66 L75,69 L82,66 L75,63 Z" />
+    <path android:fillColor="#D66BA0" android:pathData="M62,72 L75,79 L88,72 L88,78 L75,85 L62,78 Z" />
+    <path android:fillColor="#D66BA0" android:pathData="M62,81 L75,88 L88,81 L88,87 L75,94 L62,87 Z" />
 </vector>
