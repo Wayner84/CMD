@@ -1,29 +1,46 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
   <title id="title">Townsend Precision Labs Ltd logo</title>
-  <desc id="desc">A muted pink engineering logo: circular emblem with stylised caliper/probe and stacked cube, plus Townsend Precision Labs Ltd wordmark.</desc>
-  <rect width="1200" height="620" fill="#121017"/>
-  <g fill="none" stroke="#d66ba0" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="250" cy="310" r="205" stroke-width="28"/>
+  <desc id="desc">Clean dark-mode vector logo with a pink metrology emblem and Townsend Precision Labs Ltd wordmark.</desc>
+  <defs>
+    <style>
+      .bg{fill:#121017}.pink{fill:#d66ba0}.pinkStroke{fill:none;stroke:#d66ba0;stroke-width:26;stroke-linecap:round;stroke-linejoin:round}.cut{fill:#121017}.word{fill:#d66ba0;font-family:Arial Narrow,Arial,Helvetica,sans-serif;font-weight:800;letter-spacing:6px}
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="620" rx="38"/>
+
+  <!-- Cleaner emblem: circular badge, CMM/caliper arm, probe, and stacked cube. -->
+  <g transform="translate(64 64)">
+    <circle class="pinkStroke" cx="245" cy="246" r="206"/>
+
+    <!-- Main measuring frame: simpler, smoother and less blobby than the first pass. -->
+    <path class="pink" d="M142 175h86c61 0 111 50 111 111v29h77c12 0 22 10 22 22v37c0 12-10 22-22 22h-41l-27 88c-4 13-23 13-27 0l-27-88h-28c-12 0-22-10-22-22v-37c0-12 10-22 22-22h48v-29c0-47-38-85-85-85h-60v256c0 11-9 20-20 20h-32V311h-19c-10 0-18-8-18-18v-68c0-7 4-13 10-16z"/>
+
+    <!-- Horizontal jaw / probe body. -->
+    <path class="pink" d="M72 244h180c10 0 18 8 18 18v31c0 10-8 18-18 18H72z"/>
+    <path class="cut" d="M98 262h133c5 0 9 4 9 9v12c0 5-4 9-9 9H98z"/>
+
+    <!-- Scale ticks cut out of the upright. -->
+    <g class="cut">
+      <rect x="195" y="331" width="67" height="9" rx="4.5"/>
+      <rect x="195" y="357" width="67" height="9" rx="4.5"/>
+      <rect x="195" y="383" width="67" height="9" rx="4.5"/>
+      <rect x="195" y="409" width="67" height="9" rx="4.5"/>
+    </g>
+
+    <!-- Three stacked isometric layers, kept crisp and symmetrical. -->
+    <g transform="translate(298 304)">
+      <path class="pink" d="M0 42 61 9l61 33-61 34z"/>
+      <path class="cut" d="M31 42 61 26l31 16-31 17z"/>
+      <path class="pink" d="M0 80 61 113l61-33v28l-61 35-61-35z"/>
+      <path class="pink" d="M0 121 61 154l61-33v28l-61 35-61-35z"/>
+      <path class="pink" d="M0 162 61 195l61-33v28l-61 35-61-35z"/>
+    </g>
   </g>
-  <g fill="#d66ba0">
-    <!-- Stylised CMM/caliper body inspired by the source PNG, redrawn as clean vector geometry. -->
-    <path d="M142 250 L142 223 L218 183 C236 174 257 169 280 169 L329 169 C374 169 415 192 433 228 L433 275 L485 275 C494 275 501 282 501 291 L501 325 C501 333 494 340 485 340 L459 340 L437 414 C433 428 413 428 409 414 L386 340 L365 340 C356 340 349 333 349 325 L349 291 C349 282 356 275 365 275 L402 275 L402 222 L342 222 C322 222 310 232 310 251 L310 486 C310 498 300 508 288 508 L261 508 L261 414 L247 414 C235 414 225 404 225 392 L225 330 L143 278 L143 263 L275 263 L275 250 Z"/>
-    <rect x="142" y="280" width="112" height="34" rx="7"/>
-    <rect x="272" y="313" width="70" height="10" rx="5"/>
-    <rect x="272" y="339" width="70" height="10" rx="5"/>
-    <rect x="272" y="365" width="70" height="10" rx="5"/>
-    <rect x="272" y="391" width="70" height="10" rx="5"/>
-    <rect x="272" y="417" width="70" height="10" rx="5"/>
-    <!-- Stacked cube / additive manufacturing mark. -->
-    <path d="M360 390 L420 360 L480 390 L420 420 Z M389 390 L420 405 L451 390 L420 375 Z" fill="#121017"/>
-    <path d="M360 390 L420 420 L480 390 L480 417 L420 449 L360 417 Z"/>
-    <path d="M360 430 L420 461 L480 430 L480 455 L420 489 L360 455 Z"/>
-    <path d="M360 470 L420 502 L480 470 L480 494 L420 528 L360 494 Z"/>
-  </g>
-  <g fill="#d66ba0" font-family="Arial Narrow, Arial, Helvetica, sans-serif" font-weight="800" letter-spacing="6">
-    <text x="570" y="250" font-size="96">TOWNSEND</text>
-    <text x="570" y="365" font-size="96">PRECISION</text>
-    <text x="570" y="480" font-size="96">LABS <tspan font-size="58">LTD</tspan></text>
+
+  <g class="word">
+    <text x="570" y="242" font-size="94">TOWNSEND</text>
+    <text x="570" y="360" font-size="94">PRECISION</text>
+    <text x="570" y="478" font-size="94">LABS <tspan font-size="56">LTD</tspan></text>
   </g>
 </svg>

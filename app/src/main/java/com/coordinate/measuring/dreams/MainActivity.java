@@ -375,16 +375,30 @@ public class MainActivity extends Activity {
             paint.setColor(colour);
             paint.setStrokeWidth(label.equals("IJK") ? dp(5) : dp(3));
             paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStyle(Paint.Style.STROKE);
             c.drawLine(o[0], o[1], p[0], p[1], paint);
 
-            double len = Math.sqrt(x*x + y*y + z*z);
-            double bx = x / len, by = y / len, bz = z / len;
-            float[] p1 = project(x - 0.12 * bx + 0.06 * by, y - 0.12 * by - 0.06 * bx, z - 0.12 * bz, cx, cy, scale);
-            float[] p2 = project(x - 0.12 * bx - 0.06 * by, y - 0.12 * by + 0.06 * bx, z - 0.12 * bz, cx, cy, scale);
-            Path head = new Path();
-            head.moveTo(p[0], p[1]); head.lineTo(p1[0], p1[1]); head.lineTo(p2[0], p2[1]); head.close();
+            // Build the arrow head in screen-space. The old 3D-offset method collapsed
+            // for vertical vectors such as the Z/K axis, so the Z arrowhead disappeared.
+            float dx = p[0] - o[0];
+            float dy = p[1] - o[1];
+            float len2 = (float)Math.sqrt(dx * dx + dy * dy);
+            if (len2 > 0.001f) {
+                float ux = dx / len2;
+                float uy = dy / len2;
+                float px = -uy;
+                float py = ux;
+                float headBack = label.equals("IJK") ? dp(18) : dp(14);
+                float headSide = label.equals("IJK") ? dp(9) : dp(7);
+                Path head = new Path();
+                head.moveTo(p[0], p[1]);
+                head.lineTo(p[0] - ux * headBack + px * headSide, p[1] - uy * headBack + py * headSide);
+                head.lineTo(p[0] - ux * headBack - px * headSide, p[1] - uy * headBack - py * headSide);
+                head.close();
+                paint.setStyle(Paint.Style.FILL);
+                c.drawPath(head, paint);
+            }
             paint.setStyle(Paint.Style.FILL);
-            c.drawPath(head, paint);
             paint.setTextSize(dp(13));
             c.drawText(label, p[0] + dp(6), p[1] - dp(6), paint);
         }
@@ -407,8 +421,10 @@ public class MainActivity extends Activity {
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
                 yaw += (event.getX() - lastX) * 0.45f;
-                pitch += (event.getY() - lastY) * 0.45f;
-                pitch = Math.max(-89f, Math.min(89f, pitch));
+                // Drag up to look from above the origin, drag down to look from below.
+                // Allow near-full orbit instead of stopping at the vertical axis.
+                pitch -= (event.getY() - lastY) * 0.45f;
+                pitch = Math.max(-170f, Math.min(170f, pitch));
                 lastX = event.getX(); lastY = event.getY(); invalidate(); return true;
             }
             return true;
