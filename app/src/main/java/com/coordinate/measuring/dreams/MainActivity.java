@@ -420,7 +420,8 @@ public class MainActivity extends Activity {
                 lastX = event.getX(); lastY = event.getY(); return true;
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
-                yaw += (event.getX() - lastX) * 0.45f;
+                // Drag right to orbit right, drag left to orbit left.
+                yaw -= (event.getX() - lastX) * 0.45f;
                 // Drag up to look from above the origin, drag down to look from below.
                 // Allow near-full orbit instead of stopping at the vertical axis.
                 pitch -= (event.getY() - lastY) * 0.45f;
