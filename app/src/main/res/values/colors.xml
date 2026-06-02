@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="cmd_background">#121017</color>
+    <color name="cmd_surface">#1D1724</color>
+    <color name="cmd_surface_2">#2A2033</color>
+    <color name="cmd_pink">#D66BA0</color>
+    <color name="cmd_pink_soft">#B94D85</color>
+    <color name="cmd_text">#F7ECF3</color>
+    <color name="cmd_muted">#BCAABC</color>
+</resources>
