@@ -14,9 +14,11 @@ The Android launcher/app icon is the matching vector drawable:
 
 - `app/src/main/res/drawable/ic_cmd_logo.xml`
 
-## First function: IJK Angle Visualiser
+## Functions
 
-The initial screen lets you visualise a direction vector used in CMM programming:
+### IJK Angle Visualiser
+
+Visualise a direction vector used in CMM programming:
 
 - Dark mode, muted pink theme.
 - Home screen with function buttons.
@@ -24,6 +26,20 @@ The initial screen lets you visualise a direction vector used in CMM programming
 - Direction arrow updated live from angle sliders or typed values.
 - Manual entry for XY angle, Z/elevation angle, and I/J/K vector values.
 - Touch-drag 3D view rotation so the vector can be inspected from any direction.
+
+### Model Measure
+
+Import a simple model and take quick point-to-point measurements:
+
+- Opens OBJ/STL files through Android's document picker.
+- Supports OBJ vertices/faces, including slash-separated face tokens and quad/ngon fan triangulation.
+- Supports ASCII STL and binary STL.
+- Shows a dependency-free custom Canvas wireframe viewer.
+- Auto-fits the model and lets you drag to orbit around it.
+- Shows vertex/triangle count and X/Y/Z bounding-box dimensions.
+- Tap one visible vertex for A, tap another for B, then see distance and ΔX/ΔY/ΔZ.
+
+Note: OBJ/STL files do not reliably declare units, so dimensions are shown as model units. For CMM use, treat them as mm/inch according to the source model.
 
 ## Build
 
