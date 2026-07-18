@@ -3,16 +3,21 @@ package com.coordinate.measuring.dreams;
 import android.app.Activity;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -36,7 +41,11 @@ import java.util.ArrayList;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
+    private static final String TAG = "CMD";
     private static final int REQUEST_OPEN_MODEL = 42;
+    private static final int REQUEST_OPEN_DRAWING = 43;
+    private static final int REQUEST_CAPTURE_DRAWING = 44;
+    private static final int MODEL_MAX_BYTES = 24 * 1024 * 1024;
 
     private final int bg = Color.rgb(18, 16, 23);
     private final int surface = Color.rgb(29, 23, 36);
@@ -48,7 +57,10 @@ public class MainActivity extends Activity {
     private LinearLayout root;
     private VisualiserView visualiser;
     private ModelMeasureView modelView;
+    private DrawingBalloonView drawingView;
     private TextView modelStatus;
+    private TextView drawingStatus;
+    private final ArrayList<BalloonRecord> balloonRecords = new ArrayList<>();
     private SeekBar xySeek;
     private SeekBar zSeek;
     private TextView xyValue;
@@ -60,6 +72,10 @@ public class MainActivity extends Activity {
     private EditText kInput;
     private boolean editing = false;
     private boolean inModelMeasure = false;
+    private boolean inIsoTolerance = false;
+    private boolean inTrigCalculator = false;
+    private boolean inProbeAngle = false;
+    private boolean inDrawingBalloon = false;
 
     private double xyDeg = 45.0;
     private double zDeg = 20.0;
@@ -83,6 +99,10 @@ public class MainActivity extends Activity {
         visualiser = null;
         modelView = null;
         inModelMeasure = false;
+        inIsoTolerance = false;
+        inTrigCalculator = false;
+        inProbeAngle = false;
+        inDrawingBalloon = false;
         setBaseRoot();
         ImageView logo = new ImageView(this);
         logo.setImageResource(getResources().getIdentifier("ic_cmd_logo", "drawable", getPackageName()));
@@ -109,13 +129,41 @@ public class MainActivity extends Activity {
         modelLp.setMargins(0, dp(10), 0, 0);
         root.addView(modelMeasure, modelLp);
 
-        TextView more = label("Import a simple OBJ/STL, orbit the wireframe, and tap two vertices to measure between them.");
+        Button drawing = button("Drawing Ballooning");
+        drawing.setOnClickListener(v -> showDrawingBallooning());
+        LinearLayout.LayoutParams drawingLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
+        drawingLp.setMargins(0, dp(10), 0, 0);
+        root.addView(drawing, drawingLp);
+
+        Button tolerances = button("ISO Tolerance Tables");
+        tolerances.setOnClickListener(v -> showIsoTolerances());
+        LinearLayout.LayoutParams tolLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
+        tolLp.setMargins(0, dp(10), 0, 0);
+        root.addView(tolerances, tolLp);
+
+        Button trig = button("Trigonometry Calculator");
+        trig.setOnClickListener(v -> showTrigonometry());
+        LinearLayout.LayoutParams trigLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
+        trigLp.setMargins(0, dp(10), 0, 0);
+        root.addView(trig, trigLp);
+
+        Button probe = button("Probe Angle Calculator");
+        probe.setOnClickListener(v -> showProbeAngle());
+        LinearLayout.LayoutParams probeLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
+        probeLp.setMargins(0, dp(10), 0, 0);
+        root.addView(probe, probeLp);
+
+        TextView more = label("Import OBJ/STL models for quick measurements, balloon engineering drawings, visualise IJK angles, check ISO limits and fits, solve shop trigonometry, or check probe/stylus clearance angles.");
         more.setPadding(0, dp(18), 0, 0);
         root.addView(more);
     }
 
     private void showIJK() {
         inModelMeasure = false;
+        inIsoTolerance = false;
+        inTrigCalculator = false;
+        inProbeAngle = false;
+        inDrawingBalloon = false;
         setBaseRoot();
         Button back = button("← Back to tools");
         back.setOnClickListener(v -> showHome());
@@ -178,9 +226,499 @@ public class MainActivity extends Activity {
         updateFromAngles(false);
     }
 
+    private void showIsoTolerances() {
+        visualiser = null;
+        modelView = null;
+        inModelMeasure = false;
+        inIsoTolerance = true;
+        setBaseRoot();
+
+        Button back = button("← Back to tools");
+        back.setOnClickListener(v -> showHome());
+        root.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        TextView title = title("ISO Tolerance Tables");
+        root.addView(title);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setPadding(0, dp(8), 0, dp(12));
+        scroll.addView(controls);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        TextView hint = label("Pick whether you are checking a hole or shaft, enter the nominal size in mm, then enter a tolerance such as H7, g6, JS11 or za12. Covers ISO lookup-table positions A–ZC/a–zc where ISO 286 defines the size/grade combination.");
+        hint.setPadding(0, 0, 0, dp(10));
+        controls.addView(hint);
+
+        final boolean[] holeMode = new boolean[] { true };
+        LinearLayout modeRow = row();
+        Button holeButton = button("Hole");
+        Button shaftButton = button("Shaft");
+        modeRow.addView(holeButton, weight());
+        modeRow.addView(shaftButton, weight());
+        controls.addView(modeRow);
+
+        LinearLayout inputRow = row();
+        EditText sizeInput = numeric("e.g. 25");
+        EditText fitInput = textInput("e.g. H7");
+        inputRow.addView(wrap("Nominal size mm", sizeInput), weight());
+        inputRow.addView(wrap("Tolerance", fitInput), weight());
+        controls.addView(inputRow);
+
+        TextView result = label("");
+        result.setTextSize(16);
+        result.setPadding(0, dp(12), 0, dp(8));
+        controls.addView(result);
+
+        Button calculate = button("Calculate tolerance");
+        LinearLayout.LayoutParams calcLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        calcLp.setMargins(0, dp(8), 0, 0);
+        controls.addView(calculate, calcLp);
+
+        TextView notes = label("Table note: uses embedded ISO 286 IT grade and fundamental-deviation lookup tables, including IT01, IT0 and IT1–IT18. If a size/grade/position is not defined by the table, CMD warns instead of inventing a value.");
+        notes.setPadding(0, dp(14), 0, 0);
+        controls.addView(notes);
+
+        Runnable updateMode = () -> {
+            holeButton.setText(holeMode[0] ? "✓ Hole" : "Hole");
+            shaftButton.setText(holeMode[0] ? "Shaft" : "✓ Shaft");
+        };
+        holeButton.setOnClickListener(v -> { holeMode[0] = true; updateMode.run(); });
+        shaftButton.setOnClickListener(v -> { holeMode[0] = false; updateMode.run(); });
+        updateMode.run();
+
+        calculate.setOnClickListener(v -> result.setText(calculateTolerance(sizeInput.getText().toString(), fitInput.getText().toString(), holeMode[0])));
+        sizeInput.setText("25");
+        fitInput.setText("H7");
+        result.setText(calculateTolerance("25", "H7", true));
+    }
+
+    private String calculateTolerance(String sizeText, String designationText, boolean holeMode) {
+        Double nominal = parse(sizeText);
+        if (nominal == null || nominal <= 0 || nominal > 3150) {
+            return "Enter a nominal size from 0 to 3150 mm.";
+        }
+        String raw = designationText == null ? "" : designationText.trim();
+        if (raw.length() < 2) return "Enter a tolerance such as H7, g6, JS11 or za12.";
+
+        int split = 0;
+        while (split < raw.length() && Character.isLetter(raw.charAt(split))) split++;
+        if (split == 0 || split >= raw.length()) return "Use letters plus grade, for example H7, g6 or JS11.";
+        String letters = raw.substring(0, split);
+        String gradeText = raw.substring(split).toUpperCase(Locale.UK);
+        int itIndex = toleranceGradeIndex(gradeText);
+        if (itIndex < 0) return "Grade must be IT01, IT0, or IT1 to IT18, for example H7 or js11.";
+
+        boolean typedHole = Character.isUpperCase(letters.charAt(0));
+        if (!letters.equalsIgnoreCase("js") && typedHole != holeMode) {
+            String corrected = holeMode ? letters.toUpperCase(Locale.UK) : letters.toLowerCase(Locale.UK);
+            return "Hole/Shaft selection does not match " + raw + ". Use " + corrected + gradeDisplay(itIndex) + " or switch to " + (holeMode ? "Shaft" : "Hole") + ".";
+        }
+
+        String pos = letters.equalsIgnoreCase("js") ? (holeMode ? "JS" : "js") : (holeMode ? letters.toUpperCase(Locale.UK) : letters.toLowerCase(Locale.UK));
+        double itMicrons = lookupIt(nominal, itIndex);
+        if (Double.isNaN(itMicrons)) return "No IT grade table row found for this size.";
+
+        double lowerMicrons;
+        double upperMicrons;
+        if (holeMode) {
+            String dbKey = holeGradeDb(pos, itIndex);
+            if (!isSupportedHolePosition(pos)) return "Unsupported hole position " + pos + ".";
+            if (isExceptionalHole(dbKey, itIndex, nominal)) return pos + gradeDisplay(itIndex) + " is outside the ISO table range covered for this size/grade.";
+            if (pos.equals("JS")) {
+                lowerMicrons = -itMicrons / 2.0;
+                upperMicrons = itMicrons / 2.0;
+            } else {
+                double dev = getHoleDeviation(dbKey, itIndex, nominal);
+                if (Double.isNaN(dev)) return "No ISO deviation table value for " + pos + gradeDisplay(itIndex) + " at this size.";
+                if (isAH(pos)) { lowerMicrons = dev; upperMicrons = dev + itMicrons; }
+                else { upperMicrons = dev; lowerMicrons = dev - itMicrons; }
+            }
+        } else {
+            String dbKey = shaftGradeDb(pos, itIndex);
+            if (!isSupportedShaftPosition(pos)) return "Unsupported shaft position " + pos + ".";
+            if (isExceptionalShaft(dbKey, itIndex, nominal)) return pos + gradeDisplay(itIndex) + " is outside the ISO table range covered for this size/grade.";
+            if (pos.equals("js")) {
+                lowerMicrons = -itMicrons / 2.0;
+                upperMicrons = itMicrons / 2.0;
+            } else {
+                double dev = getShaftDeviation(dbKey, nominal);
+                if (Double.isNaN(dev)) return "No ISO deviation table value for " + pos + gradeDisplay(itIndex) + " at this size.";
+                if (pos.compareTo("h") <= 0) { upperMicrons = dev; lowerMicrons = dev - itMicrons; }
+                else { lowerMicrons = dev; upperMicrons = dev + itMicrons; }
+            }
+        }
+
+        double min = nominal + lowerMicrons / 1000.0;
+        double max = nominal + upperMicrons / 1000.0;
+        return String.format(Locale.UK,
+                "%s%s at %.3f mm\nTolerance width: %.1f µm (%.4f mm)\nLower deviation: %+.1f µm (%+.4f mm)\nUpper deviation: %+.1f µm (%+.4f mm)\nMinimum size: %.5f mm\nMaximum size: %.5f mm",
+                pos, gradeDisplay(itIndex), nominal, itMicrons, itMicrons / 1000.0,
+                lowerMicrons, lowerMicrons / 1000.0, upperMicrons, upperMicrons / 1000.0, min, max);
+    }
+
+    private static final String[] IT_KEYS = new String[] {"IT01", "IT0", "IT1", "IT2", "IT3", "IT4", "IT5", "IT6", "IT7", "IT8", "IT9", "IT10", "IT11", "IT12", "IT13", "IT14", "IT15", "IT16", "IT17", "IT18"};
+    private static final double[][] ITG_TABLE = new double[][] {
+            {0.0, 3.0, 0.2999999999999999, 0.5, 0.8, 1.2, 2.0, 3.0, 4.0, 6.0, 10.0, 14.0, 25.0, 40.0, 60.0, 100.0, 140.0, 250.0, 400.0, 600.0, 1000.0, 1400.0},
+            {3.0, 6.0, 0.4, 0.5999999999999999, 1.0, 1.5, 2.5, 4.0, 5.0, 8.0, 12.0, 18.0, 30.0, 48.0, 75.0, 120.0, 180.0, 300.0, 480.0, 750.0, 1200.0, 1800.0},
+            {6.0, 10.0, 0.4, 0.5999999999999999, 1.0, 1.5, 2.5, 4.0, 6.0, 9.0, 15.0, 22.0, 36.0, 58.0, 90.0, 150.0, 220.0, 360.0, 580.0, 900.0, 1500.0, 2200.0},
+            {10.0, 18.0, 0.5, 0.8, 1.2, 2.0, 3.0, 5.0, 8.0, 11.0, 18.0, 27.0, 43.0, 70.0, 110.0, 180.0, 270.0, 430.0, 700.0, 1100.0, 1800.0, 2700.0},
+            {18.0, 30.0, 0.5999999999999999, 1.0, 1.5, 2.5, 4.0, 6.0, 9.0, 13.0, 21.0, 33.0, 52.0, 84.0, 130.0, 210.0, 330.0, 520.0, 840.0, 1300.0, 2100.0, 3300.0},
+            {30.0, 50.0, 0.5999999999999999, 1.0, 1.5, 2.5, 4.0, 7.0, 11.0, 16.0, 25.0, 39.0, 62.0, 100.0, 160.0, 250.0, 390.0, 620.0, 1000.0, 1600.0, 2500.0, 3900.0},
+            {50.0, 80.0, 0.8, 1.2, 2.0, 3.0, 5.0, 8.0, 13.0, 19.0, 30.0, 46.0, 74.0, 120.0, 190.0, 300.0, 460.0, 740.0, 1200.0, 1900.0, 3000.0, 4600.0},
+            {80.0, 120.0, 1.0, 1.5, 2.5, 4.0, 6.0, 10.0, 15.0, 22.0, 35.0, 54.0, 87.0, 140.0, 220.0, 350.0, 540.0, 870.0, 1400.0, 2200.0, 3500.0, 5400.0},
+            {120.0, 180.0, 1.2, 2.0, 3.5, 5.0, 8.0, 12.0, 18.0, 25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0, 1000.0, 1600.0, 2500.0, 4000.0, 6300.0},
+            {180.0, 250.0, 2.0, 3.0, 4.5, 7.0, 10.0, 14.0, 20.0, 29.0, 46.0, 72.0, 115.0, 185.0, 290.0, 460.0, 720.0, 1150.0, 1850.0, 2900.0, 4600.0, 7200.0},
+            {250.0, 315.0, 2.5, 4.0, 6.0, 8.0, 12.0, 16.0, 23.0, 32.0, 52.0, 81.0, 130.0, 210.0, 320.0, 520.0, 810.0, 1300.0, 2100.0, 3200.0, 5200.0, 8100.0},
+            {315.0, 400.0, 3.0, 5.0, 7.0, 9.0, 13.0, 18.0, 25.0, 36.0, 57.0, 89.0, 140.0, 230.0, 360.0, 570.0, 890.0, 1400.0, 2300.0, 3600.0, 5700.0, 8900.0},
+            {400.0, 500.0, 4.0, 6.0, 8.0, 10.0, 15.0, 20.0, 27.0, 40.0, 63.0, 97.0, 155.0, 250.0, 400.0, 630.0, 970.0, 1550.0, 2500.0, 4000.0, 6300.0, 9700.0},
+            {500.0, 630.0, Double.NaN, Double.NaN, 9.0, 11.0, 16.0, 22.0, 32.0, 44.0, 70.0, 110.0, 175.0, 280.0, 440.0, 700.0, 1100.0, 1750.0, 2800.0, 4400.0, 7000.0, 11000.0},
+            {630.0, 800.0, Double.NaN, Double.NaN, 10.0, 13.0, 18.0, 25.0, 36.0, 50.0, 80.0, 125.0, 200.0, 320.0, 500.0, 800.0, 1250.0, 2000.0, 3200.0, 5000.0, 8000.0, 12500.0},
+            {800.0, 1000.0, Double.NaN, Double.NaN, 11.0, 15.0, 21.0, 28.0, 40.0, 56.0, 90.0, 140.0, 230.0, 360.0, 560.0, 900.0, 1400.0, 2300.0, 3600.0, 5600.0, 9000.0, 14000.0},
+            {1000.0, 1250.0, Double.NaN, Double.NaN, 13.0, 18.0, 24.0, 33.0, 47.0, 66.0, 105.0, 165.0, 260.0, 420.0, 660.0, 1050.0, 1650.0, 2600.0, 4200.0, 6600.0, 10500.0, 16500.0},
+            {1250.0, 1600.0, Double.NaN, Double.NaN, 15.0, 21.0, 29.0, 39.0, 55.0, 78.0, 125.0, 195.0, 310.0, 500.0, 780.0, 1250.0, 1950.0, 3100.0, 5000.0, 7800.0, 12500.0, 19500.0},
+            {1600.0, 2000.0, Double.NaN, Double.NaN, 18.0, 25.0, 35.0, 46.0, 65.0, 92.0, 150.0, 230.0, 370.0, 600.0, 920.0, 1500.0, 2300.0, 3700.0, 6000.0, 9200.0, 15000.0, 23000.0},
+            {2000.0, 2500.0, Double.NaN, Double.NaN, 22.0, 30.0, 41.0, 55.0, 78.0, 110.0, 175.0, 280.0, 440.0, 700.0, 1100.0, 1750.0, 2800.0, 4400.0, 7000.0, 11000.0, 17500.0, 28000.0},
+            {2500.0, 3150.0, Double.NaN, Double.NaN, 26.0, 36.0, 50.0, 68.0, 96.0, 135.0, 210.0, 330.0, 540.0, 860.0, 1350.0, 2100.0, 3300.0, 5400.0, 8600.0, 13500.0, 21000.0, 33000.0}
+    };
+    private static final String[] HOLE_KEYS = new String[] {"A", "B", "C", "CD", "D", "E", "EF", "F", "FG", "G", "H", "J6", "J7", "J8", "K_IT1_IT8", "K_IT9_IT18", "M_IT1_IT8", "M_IT9_IT18", "N_IT1_IT8", "N_IT9_IT18", "P", "R", "S", "T", "U", "V", "X", "Y", "Z", "ZA", "ZB", "ZC"};
+    private static final double[][] HOLE_DEV_TABLE = new double[][] {
+            {18.0, 24.0, 300.0, 160.0, 110.0, 85.0, 65.0, 40.0, 28.0, 20.0, 12.0, 7.0, 0.0, 8.0, 12.0, 20.0, -2.0, Double.NaN, -8.0, -8.0, -15.0, 0.0, -22.0, -28.0, -35.0, Double.NaN, -41.0, -47.0, -54.0, -63.0, -73.0, -98.0, -136.0, -188.0},
+            {0.0, 3.0, 270.0, 140.0, 60.0, 34.0, 20.0, 14.0, 10.0, 6.0, 4.0, 2.0, 0.0, 2.0, 4.0, 6.0, 0.0, 0.0, -2.0, -2.0, -4.0, -4.0, -6.0, -10.0, -14.0, Double.NaN, -18.0, Double.NaN, -20.0, Double.NaN, -26.0, -32.0, -40.0, -60.0},
+            {3.0, 6.0, 270.0, 140.0, 70.0, 46.0, 30.0, 20.0, 14.0, 10.0, 6.0, 4.0, 0.0, 5.0, 6.0, 10.0, -1.0, Double.NaN, -4.0, -4.0, -8.0, 0.0, -12.0, -15.0, -19.0, Double.NaN, -23.0, Double.NaN, -28.0, Double.NaN, -35.0, -42.0, -50.0, -80.0},
+            {6.0, 10.0, 280.0, 150.0, 80.0, 56.0, 40.0, 25.0, 18.0, 13.0, 8.0, 5.0, 0.0, 5.0, 8.0, 12.0, -1.0, Double.NaN, -6.0, -6.0, -10.0, 0.0, -15.0, -19.0, -23.0, Double.NaN, -28.0, Double.NaN, -34.0, Double.NaN, -42.0, -52.0, -67.0, -97.0},
+            {10.0, 14.0, 290.0, 150.0, 95.0, 70.0, 50.0, 32.0, 23.0, 16.0, 10.0, 6.0, 0.0, 6.0, 10.0, 15.0, -1.0, Double.NaN, -7.0, -7.0, -12.0, 0.0, -18.0, -23.0, -28.0, Double.NaN, -33.0, Double.NaN, -40.0, Double.NaN, -50.0, -64.0, -90.0, -130.0},
+            {14.0, 18.0, 290.0, 150.0, 95.0, 70.0, 50.0, 32.0, 23.0, 16.0, 10.0, 6.0, 0.0, 6.0, 10.0, 15.0, -1.0, Double.NaN, -7.0, -7.0, -12.0, 0.0, -18.0, -23.0, -28.0, Double.NaN, -33.0, -39.0, -45.0, Double.NaN, -60.0, -77.0, -108.0, -150.0},
+            {24.0, 30.0, 300.0, 160.0, 110.0, 85.0, 65.0, 40.0, 28.0, 20.0, 12.0, 7.0, 0.0, 8.0, 12.0, 20.0, -2.0, Double.NaN, -8.0, -8.0, -15.0, 0.0, -22.0, -28.0, -35.0, -41.0, -48.0, -55.0, -64.0, -75.0, -88.0, -118.0, -160.0, -218.0},
+            {30.0, 40.0, 310.0, 170.0, 120.0, 100.0, 80.0, 50.0, 35.0, 25.0, 15.0, 9.0, 0.0, 10.0, 14.0, 24.0, -2.0, Double.NaN, -9.0, -9.0, -17.0, 0.0, -26.0, -34.0, -43.0, -48.0, -60.0, -68.0, -80.0, -94.0, -112.0, -148.0, -200.0, -274.0},
+            {40.0, 50.0, 320.0, 180.0, 130.0, 100.0, 80.0, 50.0, 35.0, 25.0, 15.0, 9.0, 0.0, 10.0, 14.0, 24.0, -2.0, Double.NaN, -9.0, -9.0, -17.0, 0.0, -26.0, -34.0, -43.0, -54.0, -70.0, -81.0, -97.0, -114.0, -136.0, -180.0, -242.0, -325.0},
+            {50.0, 65.0, 340.0, 190.0, 140.0, Double.NaN, 100.0, 60.0, Double.NaN, 30.0, Double.NaN, 10.0, 0.0, 13.0, 18.0, 28.0, -2.0, Double.NaN, -11.0, -11.0, -20.0, 0.0, -32.0, -41.0, -53.0, -66.0, -87.0, -102.0, -122.0, -144.0, -172.0, -226.0, -300.0, -405.0},
+            {65.0, 80.0, 360.0, 200.0, 150.0, Double.NaN, 100.0, 60.0, Double.NaN, 30.0, Double.NaN, 10.0, 0.0, 13.0, 18.0, 28.0, -2.0, Double.NaN, -11.0, -11.0, -20.0, 0.0, -32.0, -43.0, -59.0, -75.0, -102.0, -120.0, -146.0, -174.0, -210.0, -274.0, -360.0, -480.0},
+            {80.0, 100.0, 380.0, 220.0, 170.0, Double.NaN, 120.0, 72.0, Double.NaN, 36.0, Double.NaN, 12.0, 0.0, 16.0, 22.0, 34.0, -3.0, Double.NaN, -13.0, -13.0, -23.0, 0.0, -37.0, -51.0, -71.0, -91.0, -124.0, -146.0, -178.0, -214.0, -258.0, -335.0, -445.0, -585.0},
+            {100.0, 120.0, 410.0, 240.0, 180.0, Double.NaN, 120.0, 72.0, Double.NaN, 36.0, Double.NaN, 12.0, 0.0, 16.0, 22.0, 34.0, -3.0, Double.NaN, -13.0, -13.0, -23.0, 0.0, -37.0, -54.0, -79.0, -104.0, -144.0, -172.0, -210.0, -254.0, -310.0, -400.0, -525.0, -690.0},
+            {120.0, 140.0, 460.0, 260.0, 200.0, Double.NaN, 145.0, 85.0, Double.NaN, 43.0, Double.NaN, 14.0, 0.0, 18.0, 26.0, 41.0, -3.0, Double.NaN, -15.0, -15.0, -27.0, 0.0, -43.0, -63.0, -92.0, -122.0, -170.0, -202.0, -248.0, -300.0, -365.0, -470.0, -620.0, -800.0},
+            {140.0, 160.0, 520.0, 280.0, 210.0, Double.NaN, 145.0, 85.0, Double.NaN, 43.0, Double.NaN, 14.0, 0.0, 18.0, 26.0, 41.0, -3.0, Double.NaN, -15.0, -15.0, -27.0, 0.0, -43.0, -65.0, -100.0, -134.0, -190.0, -228.0, -280.0, -340.0, -415.0, -535.0, -700.0, -900.0},
+            {160.0, 180.0, 580.0, 310.0, 230.0, Double.NaN, 145.0, 85.0, Double.NaN, 43.0, Double.NaN, 14.0, 0.0, 18.0, 26.0, 41.0, -3.0, Double.NaN, -15.0, -15.0, -27.0, 0.0, -43.0, -68.0, -108.0, -146.0, -210.0, -252.0, -310.0, -380.0, -465.0, -600.0, -780.0, -1000.0},
+            {180.0, 200.0, 660.0, 340.0, 240.0, Double.NaN, 170.0, 100.0, Double.NaN, 50.0, Double.NaN, 15.0, 0.0, 22.0, 30.0, 47.0, -4.0, Double.NaN, -17.0, -17.0, -31.0, 0.0, -50.0, -77.0, -122.0, -166.0, -236.0, -284.0, -350.0, -425.0, -520.0, -670.0, -880.0, -1150.0},
+            {200.0, 225.0, 740.0, 380.0, 260.0, Double.NaN, 170.0, 100.0, Double.NaN, 50.0, Double.NaN, 15.0, 0.0, 22.0, 30.0, 47.0, -4.0, Double.NaN, -17.0, -17.0, -31.0, 0.0, -50.0, -80.0, -130.0, -180.0, -258.0, -310.0, -385.0, -470.0, -575.0, -740.0, -960.0, -1250.0},
+            {225.0, 250.0, 820.0, 420.0, 280.0, Double.NaN, 170.0, 100.0, Double.NaN, 50.0, Double.NaN, 15.0, 0.0, 22.0, 30.0, 47.0, -4.0, Double.NaN, -17.0, -17.0, -31.0, 0.0, -50.0, -84.0, -140.0, -196.0, -284.0, -340.0, -425.0, -520.0, -640.0, -820.0, -1050.0, -1350.0},
+            {250.0, 280.0, 920.0, 480.0, 300.0, Double.NaN, 190.0, 110.0, Double.NaN, 56.0, Double.NaN, 17.0, 0.0, 25.0, 36.0, 55.0, -4.0, Double.NaN, -20.0, -20.0, -34.0, 0.0, -56.0, -94.0, -158.0, -218.0, -315.0, -385.0, -475.0, -580.0, -710.0, -920.0, -1200.0, -1550.0},
+            {280.0, 315.0, 1050.0, 540.0, 330.0, Double.NaN, 190.0, 110.0, Double.NaN, 56.0, Double.NaN, 17.0, 0.0, 25.0, 36.0, 55.0, -4.0, Double.NaN, -20.0, -20.0, -34.0, 0.0, -56.0, -98.0, -170.0, -240.0, -350.0, -425.0, -525.0, -650.0, -790.0, -1000.0, -1300.0, -1700.0},
+            {315.0, 355.0, 1200.0, 600.0, 360.0, Double.NaN, 210.0, 125.0, Double.NaN, 62.0, Double.NaN, 18.0, 0.0, 29.0, 39.0, 60.0, -4.0, Double.NaN, -21.0, -21.0, -37.0, 0.0, -62.0, -108.0, -190.0, -268.0, -390.0, -475.0, -590.0, -730.0, -900.0, -1150.0, -1500.0, -1900.0},
+            {355.0, 400.0, 1350.0, 680.0, 400.0, Double.NaN, 210.0, 125.0, Double.NaN, 62.0, Double.NaN, 18.0, 0.0, 29.0, 39.0, 60.0, -4.0, Double.NaN, -21.0, -21.0, -37.0, 0.0, -62.0, -114.0, -208.0, -294.0, -435.0, -530.0, -660.0, -820.0, -1000.0, -1300.0, -1650.0, -2100.0},
+            {400.0, 450.0, 1500.0, 760.0, 440.0, Double.NaN, 230.0, 135.0, Double.NaN, 68.0, Double.NaN, 20.0, 0.0, 33.0, 43.0, 66.0, -5.0, Double.NaN, -23.0, -23.0, -40.0, 0.0, -68.0, -126.0, -232.0, -330.0, -490.0, -595.0, -740.0, -920.0, -1100.0, -1450.0, -1850.0, -2400.0},
+            {450.0, 500.0, 1650.0, 840.0, 480.0, Double.NaN, 230.0, 135.0, Double.NaN, 68.0, Double.NaN, 20.0, 0.0, 33.0, 43.0, 66.0, -5.0, Double.NaN, -23.0, -23.0, -40.0, 0.0, -68.0, -132.0, -252.0, -360.0, -540.0, -660.0, -820.0, -1000.0, -1250.0, -1600.0, -2100.0, -2600.0},
+            {500.0, 560.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 260.0, 145.0, Double.NaN, 76.0, Double.NaN, 22.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -26.0, -26.0, -44.0, -44.0, -78.0, -150.0, -280.0, -400.0, -600.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {560.0, 630.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 260.0, 145.0, Double.NaN, 76.0, Double.NaN, 22.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -26.0, -26.0, -44.0, -44.0, -78.0, -155.0, -310.0, -450.0, -660.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {630.0, 710.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 290.0, 160.0, Double.NaN, 80.0, Double.NaN, 24.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -30.0, -30.0, -50.0, -50.0, -88.0, -175.0, -340.0, -500.0, -740.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {710.0, 800.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 290.0, 160.0, Double.NaN, 80.0, Double.NaN, 24.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -30.0, -30.0, -50.0, -50.0, -88.0, -185.0, -380.0, -560.0, -840.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {800.0, 900.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 320.0, 170.0, Double.NaN, 86.0, Double.NaN, 26.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -34.0, -34.0, -56.0, -56.0, -100.0, -210.0, -430.0, -620.0, -940.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {900.0, 1000.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 320.0, 170.0, Double.NaN, 86.0, Double.NaN, 26.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -34.0, -34.0, -56.0, -56.0, -100.0, -220.0, -470.0, -680.0, -1050.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1000.0, 1120.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 350.0, 195.0, Double.NaN, 98.0, Double.NaN, 28.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -40.0, -40.0, -66.0, -66.0, -120.0, -250.0, -520.0, -780.0, -1150.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1120.0, 1250.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 350.0, 195.0, Double.NaN, 98.0, Double.NaN, 28.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -40.0, -40.0, -66.0, -66.0, -120.0, -260.0, -580.0, -840.0, -1300.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1250.0, 1400.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 390.0, 220.0, Double.NaN, 110.0, Double.NaN, 30.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -48.0, -48.0, -78.0, -78.0, -140.0, -300.0, -640.0, -960.0, -1450.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1400.0, 1600.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 390.0, 220.0, Double.NaN, 110.0, Double.NaN, 30.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -48.0, -48.0, -78.0, -78.0, -140.0, -330.0, -720.0, -1050.0, -1600.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1600.0, 1800.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 430.0, 240.0, Double.NaN, 120.0, Double.NaN, 32.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -58.0, -58.0, -92.0, -92.0, -170.0, -370.0, -820.0, -1200.0, -1850.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1800.0, 2000.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 430.0, 240.0, Double.NaN, 120.0, Double.NaN, 32.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -58.0, -58.0, -92.0, -92.0, -170.0, -400.0, -920.0, -1350.0, -2000.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2000.0, 2240.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 480.0, 260.0, Double.NaN, 130.0, Double.NaN, 34.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -68.0, -68.0, -110.0, -110.0, -195.0, -440.0, -1000.0, -1500.0, -2300.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2240.0, 2500.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 480.0, 260.0, Double.NaN, 130.0, Double.NaN, 34.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -68.0, -68.0, -110.0, -110.0, -195.0, -460.0, -1100.0, -1650.0, -2500.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2500.0, 2800.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 520.0, 290.0, Double.NaN, 145.0, Double.NaN, 38.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -76.0, -76.0, -135.0, -135.0, -240.0, -550.0, -1250.0, -1900.0, -2900.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2800.0, 3150.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 520.0, 290.0, Double.NaN, 145.0, Double.NaN, 38.0, 0.0, Double.NaN, Double.NaN, Double.NaN, 0.0, Double.NaN, -76.0, -76.0, -135.0, -135.0, -240.0, -580.0, -1400.0, -2100.0, -3200.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN}
+    };
+    private static final String[] SHAFT_KEYS = new String[] {"a", "b", "c", "cd", "d", "e", "ef", "f", "fg", "g", "h", "j5", "j6", "j7", "j8", "k4_7", "k1_3_8_18", "m", "n", "p", "r", "s", "t", "u", "v", "x", "y", "z", "za", "zb", "zc"};
+    private static final double[][] SHAFT_DEV_TABLE = new double[][] {
+            {0.0, 3.0, -270.0, -140.0, -60.0, -34.0, -20.0, -14.0, -10.0, -6.0, -4.0, -2.0, 0.0, -2.0, -2.0, -4.0, -6.0, 0.0, 0.0, 2.0, 4.0, 6.0, 10.0, 14.0, Double.NaN, 18.0, Double.NaN, 20.0, Double.NaN, 26.0, 32.0, 40.0, 60.0},
+            {3.0, 6.0, -270.0, -140.0, -70.0, -46.0, -30.0, -20.0, -14.0, -10.0, -6.0, -4.0, 0.0, -2.0, -2.0, -4.0, Double.NaN, 1.0, 0.0, 4.0, 8.0, 12.0, 15.0, 19.0, Double.NaN, 23.0, Double.NaN, 28.0, Double.NaN, 35.0, 42.0, 50.0, 80.0},
+            {6.0, 10.0, -280.0, -150.0, -80.0, -56.0, -40.0, -25.0, -18.0, -13.0, -8.0, -5.0, 0.0, -2.0, -2.0, -5.0, Double.NaN, 1.0, 0.0, 6.0, 10.0, 15.0, 19.0, 23.0, Double.NaN, 28.0, Double.NaN, 34.0, Double.NaN, 42.0, 52.0, 67.0, 97.0},
+            {10.0, 14.0, -290.0, -150.0, -95.0, -70.0, -50.0, -32.0, -23.0, -16.0, -10.0, -6.0, 0.0, -3.0, -3.0, -6.0, Double.NaN, 1.0, 0.0, 7.0, 12.0, 18.0, 23.0, 28.0, Double.NaN, 33.0, Double.NaN, 40.0, Double.NaN, 50.0, 64.0, 90.0, 130.0},
+            {14.0, 18.0, -290.0, -150.0, -95.0, -70.0, -50.0, -32.0, -23.0, -16.0, -10.0, -6.0, 0.0, -3.0, -3.0, -6.0, Double.NaN, 1.0, 0.0, 7.0, 12.0, 18.0, 23.0, 28.0, Double.NaN, 33.0, 39.0, 45.0, Double.NaN, 60.0, 77.0, 108.0, 150.0},
+            {18.0, 24.0, -300.0, -160.0, -110.0, -85.0, -65.0, -40.0, -25.0, -20.0, -12.0, -7.0, 0.0, -4.0, -4.0, -8.0, Double.NaN, 2.0, 0.0, 8.0, 15.0, 22.0, 28.0, 35.0, Double.NaN, 41.0, 47.0, 54.0, 63.0, 73.0, 98.0, 136.0, 188.0},
+            {24.0, 30.0, -300.0, -160.0, -110.0, -85.0, -65.0, -40.0, -25.0, -20.0, -12.0, -7.0, 0.0, -4.0, -4.0, -8.0, Double.NaN, 2.0, 0.0, 8.0, 15.0, 22.0, 28.0, 35.0, 41.0, 48.0, 55.0, 64.0, 75.0, 88.0, 118.0, 160.0, 218.0},
+            {30.0, 40.0, -310.0, -170.0, -120.0, -100.0, -80.0, -50.0, -35.0, -25.0, -15.0, -9.0, 0.0, -5.0, -5.0, -10.0, Double.NaN, 2.0, 0.0, 9.0, 17.0, 26.0, 34.0, 43.0, 48.0, 60.0, 68.0, 80.0, 94.0, 112.0, 148.0, 200.0, 274.0},
+            {40.0, 50.0, -320.0, -180.0, -130.0, -100.0, -80.0, -50.0, -35.0, -25.0, -15.0, -9.0, 0.0, -5.0, -5.0, -10.0, Double.NaN, 2.0, 0.0, 9.0, 17.0, 26.0, 34.0, 43.0, 54.0, 70.0, 81.0, 97.0, 114.0, 136.0, 180.0, 242.0, 325.0},
+            {50.0, 65.0, -340.0, -190.0, -140.0, Double.NaN, -100.0, -60.0, Double.NaN, -30.0, Double.NaN, -10.0, 0.0, -7.0, -7.0, -12.0, Double.NaN, 2.0, 0.0, 11.0, 20.0, 32.0, 41.0, 53.0, 66.0, 87.0, 102.0, 122.0, 144.0, 172.0, 226.0, 300.0, 405.0},
+            {65.0, 80.0, -360.0, -200.0, -150.0, Double.NaN, -100.0, -60.0, Double.NaN, -30.0, Double.NaN, -10.0, 0.0, -7.0, -7.0, -12.0, Double.NaN, 2.0, 0.0, 11.0, 20.0, 32.0, 43.0, 59.0, 75.0, 102.0, 120.0, 146.0, 174.0, 210.0, 274.0, 360.0, 480.0},
+            {80.0, 100.0, -380.0, -220.0, -170.0, Double.NaN, -120.0, -72.0, Double.NaN, -36.0, Double.NaN, -12.0, 0.0, -9.0, -9.0, -15.0, Double.NaN, 3.0, 0.0, 13.0, 23.0, 37.0, 51.0, 71.0, 91.0, 124.0, 146.0, 178.0, 214.0, 258.0, 335.0, 445.0, 585.0},
+            {100.0, 120.0, -410.0, -240.0, -180.0, Double.NaN, -120.0, -72.0, Double.NaN, -36.0, Double.NaN, -12.0, 0.0, -9.0, -9.0, -15.0, Double.NaN, 3.0, 0.0, 13.0, 23.0, 37.0, 54.0, 79.0, 104.0, 144.0, 172.0, 210.0, 254.0, 310.0, 400.0, 525.0, 690.0},
+            {120.0, 140.0, -460.0, -260.0, -200.0, Double.NaN, -145.0, -85.0, Double.NaN, -43.0, Double.NaN, -14.0, 0.0, -11.0, -11.0, -18.0, Double.NaN, 3.0, 0.0, 15.0, 27.0, 43.0, 63.0, 92.0, 122.0, 170.0, 202.0, 248.0, 300.0, 365.0, 470.0, 620.0, 800.0},
+            {140.0, 160.0, -520.0, -280.0, -210.0, Double.NaN, -145.0, -85.0, Double.NaN, -43.0, Double.NaN, -14.0, 0.0, -11.0, -11.0, -18.0, Double.NaN, 3.0, 0.0, 15.0, 27.0, 43.0, 65.0, 100.0, 134.0, 190.0, 228.0, 280.0, 340.0, 415.0, 535.0, 700.0, 900.0},
+            {160.0, 180.0, -580.0, -310.0, -230.0, Double.NaN, -145.0, -85.0, Double.NaN, -43.0, Double.NaN, -14.0, 0.0, -11.0, -11.0, -18.0, Double.NaN, 3.0, 0.0, 15.0, 27.0, 43.0, 68.0, 108.0, 146.0, 210.0, 252.0, 310.0, 380.0, 465.0, 600.0, 780.0, 1000.0},
+            {180.0, 200.0, -660.0, -340.0, -240.0, Double.NaN, -170.0, -100.0, Double.NaN, -50.0, Double.NaN, -15.0, 0.0, -13.0, -13.0, -21.0, Double.NaN, 4.0, 0.0, 17.0, 31.0, 50.0, 77.0, 122.0, 166.0, 236.0, 284.0, 350.0, 425.0, 520.0, 670.0, 880.0, 1150.0},
+            {200.0, 225.0, -740.0, -380.0, -260.0, Double.NaN, -170.0, -100.0, Double.NaN, -50.0, Double.NaN, -15.0, 0.0, -13.0, -13.0, -21.0, Double.NaN, 4.0, 0.0, 17.0, 31.0, 50.0, 80.0, 130.0, 180.0, 258.0, 310.0, 385.0, 470.0, 575.0, 740.0, 960.0, 1250.0},
+            {225.0, 250.0, -820.0, -420.0, -280.0, Double.NaN, -170.0, -100.0, Double.NaN, -50.0, Double.NaN, -15.0, 0.0, -13.0, -13.0, -21.0, Double.NaN, 4.0, 0.0, 17.0, 31.0, 50.0, 84.0, 140.0, 196.0, 284.0, 340.0, 425.0, 520.0, 640.0, 820.0, 1050.0, 1350.0},
+            {250.0, 280.0, -920.0, -480.0, -300.0, Double.NaN, -190.0, -110.0, Double.NaN, -56.0, Double.NaN, -17.0, 0.0, -16.0, -16.0, -26.0, Double.NaN, 4.0, 0.0, 20.0, 34.0, 56.0, 94.0, 158.0, 218.0, 315.0, 385.0, 475.0, 580.0, 710.0, 920.0, 1200.0, 1550.0},
+            {280.0, 315.0, -1050.0, -540.0, -330.0, Double.NaN, -190.0, -110.0, Double.NaN, -56.0, Double.NaN, -17.0, 0.0, -16.0, -16.0, -26.0, Double.NaN, 4.0, 0.0, 20.0, 34.0, 56.0, 98.0, 170.0, 240.0, 350.0, 425.0, 525.0, 650.0, 790.0, 1000.0, 1300.0, 1700.0},
+            {315.0, 355.0, -1200.0, -600.0, -360.0, Double.NaN, -210.0, -125.0, Double.NaN, -62.0, Double.NaN, -18.0, 0.0, -18.0, -18.0, -28.0, Double.NaN, 4.0, 0.0, 21.0, 37.0, 62.0, 108.0, 190.0, 268.0, 390.0, 475.0, 590.0, 730.0, 900.0, 1150.0, 1500.0, 1900.0},
+            {355.0, 400.0, -1350.0, -680.0, -400.0, Double.NaN, -210.0, -125.0, Double.NaN, -62.0, Double.NaN, -18.0, 0.0, -18.0, -18.0, -28.0, Double.NaN, 4.0, 0.0, 21.0, 37.0, 62.0, 114.0, 208.0, 294.0, 435.0, 530.0, 660.0, 820.0, 1000.0, 1300.0, 1650.0, 2100.0},
+            {400.0, 450.0, -1500.0, -760.0, -440.0, Double.NaN, -230.0, -135.0, Double.NaN, -68.0, Double.NaN, -20.0, 0.0, -20.0, -20.0, -32.0, Double.NaN, 5.0, 0.0, 23.0, 40.0, 68.0, 126.0, 232.0, 330.0, 490.0, 595.0, 740.0, 920.0, 1100.0, 1450.0, 1850.0, 2400.0},
+            {450.0, 500.0, -1650.0, -840.0, -480.0, Double.NaN, -230.0, -135.0, Double.NaN, -68.0, Double.NaN, -20.0, 0.0, -20.0, -20.0, -32.0, Double.NaN, 5.0, 0.0, 23.0, 40.0, 68.0, 132.0, 252.0, 360.0, 540.0, 660.0, 820.0, 1000.0, 1250.0, 1600.0, 2100.0, 2600.0},
+            {500.0, 560.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -260.0, -145.0, Double.NaN, -76.0, Double.NaN, -22.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 26.0, 44.0, 78.0, 150.0, 280.0, 400.0, 600.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {560.0, 630.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -260.0, -145.0, Double.NaN, -76.0, Double.NaN, -22.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 26.0, 44.0, 78.0, 155.0, 310.0, 450.0, 660.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {630.0, 710.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -290.0, -160.0, Double.NaN, -80.0, Double.NaN, -24.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 30.0, 50.0, 88.0, 175.0, 340.0, 500.0, 740.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {710.0, 800.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -290.0, -160.0, Double.NaN, -80.0, Double.NaN, -24.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 30.0, 50.0, 88.0, 185.0, 380.0, 560.0, 840.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {800.0, 900.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -320.0, -170.0, Double.NaN, -86.0, Double.NaN, -26.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 34.0, 56.0, 100.0, 210.0, 430.0, 620.0, 940.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {900.0, 1000.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -320.0, -170.0, Double.NaN, -86.0, Double.NaN, -26.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 34.0, 56.0, 100.0, 220.0, 470.0, 680.0, 1050.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1000.0, 1120.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -350.0, -195.0, Double.NaN, -98.0, Double.NaN, -28.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 40.0, 66.0, 120.0, 250.0, 520.0, 780.0, 1150.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1120.0, 1250.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -350.0, -195.0, Double.NaN, -98.0, Double.NaN, -28.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 40.0, 66.0, 120.0, 260.0, 580.0, 840.0, 1300.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1250.0, 1400.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -390.0, -220.0, Double.NaN, -110.0, Double.NaN, -30.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 48.0, 78.0, 140.0, 300.0, 640.0, 960.0, 1450.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1400.0, 1600.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -390.0, -220.0, Double.NaN, -110.0, Double.NaN, -30.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 48.0, 78.0, 140.0, 330.0, 720.0, 1050.0, 1600.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1600.0, 1800.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -430.0, -240.0, Double.NaN, -120.0, Double.NaN, -32.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 58.0, 92.0, 170.0, 370.0, 820.0, 1200.0, 1850.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {1800.0, 2000.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -430.0, -240.0, Double.NaN, -120.0, Double.NaN, -32.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 58.0, 92.0, 170.0, 400.0, 920.0, 1350.0, 2000.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2000.0, 2240.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -480.0, -260.0, Double.NaN, -130.0, Double.NaN, -34.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 68.0, 110.0, 195.0, 440.0, 1000.0, 1500.0, 2300.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2240.0, 2500.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -480.0, -260.0, Double.NaN, -130.0, Double.NaN, -34.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 68.0, 110.0, 195.0, 460.0, 1100.0, 1650.0, 2500.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2500.0, 2800.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -520.0, -290.0, Double.NaN, -145.0, Double.NaN, -38.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 76.0, 135.0, 240.0, 550.0, 1250.0, 1900.0, 2900.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN},
+            {2800.0, 3150.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, -520.0, -290.0, Double.NaN, -145.0, Double.NaN, -38.0, 0.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0.0, 0.0, 76.0, 135.0, 240.0, 580.0, 1400.0, 2100.0, 3200.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN}
+    };
+    private static final String[] HOLE_DELTA_KEYS = new String[] {"IT3", "IT4", "IT5", "IT6", "IT7", "IT8"};
+    private static final double[][] HOLE_DELTA_TABLE = new double[][] {
+            {0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+            {3.0, 6.0, 1.0, 1.5, 1.0, 3.0, 4.0, 6.0},
+            {6.0, 10.0, 1.0, 1.5, 2.0, 3.0, 6.0, 7.0},
+            {10.0, 14.0, 1.0, 2.0, 3.0, 3.0, 7.0, 9.0},
+            {14.0, 18.0, 1.0, 2.0, 3.0, 3.0, 7.0, 9.0},
+            {18.0, 24.0, 1.5, 2.0, 3.0, 4.0, 8.0, 12.0},
+            {24.0, 30.0, 1.5, 2.0, 3.0, 4.0, 8.0, 12.0},
+            {30.0, 40.0, 1.5, 3.0, 4.0, 5.0, 9.0, 14.0},
+            {40.0, 50.0, 1.5, 3.0, 4.0, 5.0, 9.0, 14.0},
+            {50.0, 65.0, 2.0, 3.0, 5.0, 6.0, 11.0, 16.0},
+            {65.0, 80.0, 2.0, 3.0, 5.0, 6.0, 11.0, 16.0},
+            {80.0, 100.0, 2.0, 4.0, 5.0, 7.0, 13.0, 19.0},
+            {100.0, 120.0, 2.0, 4.0, 5.0, 7.0, 13.0, 19.0},
+            {120.0, 140.0, 3.0, 4.0, 6.0, 7.0, 15.0, 23.0},
+            {140.0, 160.0, 3.0, 4.0, 6.0, 7.0, 15.0, 23.0},
+            {160.0, 180.0, 3.0, 4.0, 6.0, 7.0, 15.0, 23.0},
+            {180.0, 200.0, 3.0, 4.0, 6.0, 9.0, 17.0, 26.0},
+            {200.0, 225.0, 3.0, 4.0, 6.0, 9.0, 17.0, 26.0},
+            {225.0, 250.0, 3.0, 4.0, 6.0, 9.0, 17.0, 26.0},
+            {250.0, 280.0, 4.0, 4.0, 7.0, 9.0, 20.0, 29.0},
+            {280.0, 315.0, 4.0, 4.0, 7.0, 9.0, 20.0, 29.0},
+            {315.0, 355.0, 4.0, 5.0, 7.0, 11.0, 21.0, 32.0},
+            {355.0, 400.0, 4.0, 5.0, 7.0, 11.0, 21.0, 32.0},
+            {400.0, 450.0, 5.0, 5.0, 7.0, 13.0, 23.0, 34.0},
+            {450.0, 500.0, 5.0, 5.0, 7.0, 13.0, 23.0, 34.0}
+    };
+
+    private int toleranceGradeIndex(String gradeText) {
+        String g = gradeText.startsWith("IT") ? gradeText : "IT" + gradeText;
+        for (int n = 0; n < IT_KEYS.length; n++) if (IT_KEYS[n].equals(g)) return n;
+        return -1;
+    }
+    private String gradeDisplay(int itIndex) { return IT_KEYS[itIndex].substring(2); }
+    private double lookupIt(double size, int itIndex) { double[] row = findRangeRow(ITG_TABLE, size); return row == null ? Double.NaN : row[2 + itIndex]; }
+    private double[] findRangeRow(double[][] table, double size) {
+        for (double[] row : table) if (size > row[0] && size <= row[1]) return row;
+        return null;
+    }
+    private int keyIndex(String[] keys, String key) { for (int n = 0; n < keys.length; n++) if (keys[n].equals(key)) return n; return -1; }
+    private boolean hasKey(String[] keys, String key) { return keyIndex(keys, key) >= 0; }
+    private boolean isSupportedHolePosition(String pos) { return pos.equals("JS") || hasKey(HOLE_KEYS, holeGradeDb(pos, 8)); }
+    private boolean isSupportedShaftPosition(String pos) { return pos.equals("js") || hasKey(SHAFT_KEYS, shaftGradeDb(pos, 8)); }
+    private boolean isAH(String pos) { return pos.length() == 1 && pos.charAt(0) >= 'A' && pos.charAt(0) <= 'H'; }
+    private String holeGradeDb(String uiGrade, int itIndex) {
+        int it = gradeNumber(itIndex);
+        if (uiGrade.equals("J")) { if (it == 6 || it == 7 || it == 8) return "J" + it; return "J"; }
+        if (uiGrade.equals("K")) return (it >= 1 && it <= 8) ? "K_IT1_IT8" : "K_IT9_IT18";
+        if (uiGrade.equals("M")) return (it >= 1 && it <= 8) ? "M_IT1_IT8" : "M_IT9_IT18";
+        if (uiGrade.equals("N")) return (it >= 1 && it <= 8) ? "N_IT1_IT8" : "N_IT9_IT18";
+        return uiGrade;
+    }
+    private String shaftGradeDb(String uiGrade, int itIndex) {
+        int it = gradeNumber(itIndex);
+        if (uiGrade.equals("j")) { if (it == 5 || it == 6 || it == 7 || it == 8) return "j" + it; return "j"; }
+        if (uiGrade.equals("k")) { if (it == 4 || it == 5 || it == 6 || it == 7) return "k4_7"; return "k1_3_8_18"; }
+        return uiGrade;
+    }
+    private int gradeNumber(int itIndex) { if (itIndex == 0) return -1; if (itIndex == 1) return 0; return itIndex - 1; }
+    private double getHoleDeviation(String dbKey, int itIndex, double size) {
+        double[] row = findRangeRow(HOLE_DEV_TABLE, size); if (row == null) return Double.NaN;
+        int idx = keyIndex(HOLE_KEYS, dbKey); if (idx < 0) return Double.NaN;
+        double base = row[2 + idx]; if (Double.isNaN(base)) return Double.NaN;
+        int it = gradeNumber(itIndex); boolean deltaCondition = false;
+        if (dbKey.equals("K_IT1_IT8") || dbKey.equals("M_IT1_IT8") || dbKey.equals("N_IT1_IT8")) deltaCondition = size > 3 && size <= 500;
+        else if (dbKey.equals("P") || dbKey.equals("R") || dbKey.equals("S") || dbKey.equals("T") || dbKey.equals("U") || dbKey.equals("V") || dbKey.equals("X") || dbKey.equals("Y") || dbKey.equals("Z") || dbKey.equals("ZA") || dbKey.equals("ZB") || dbKey.equals("ZC")) deltaCondition = it > 2 && it < 8;
+        if (deltaCondition) { double[] drow = findRangeRow(HOLE_DELTA_TABLE, size); int didx = keyIndex(HOLE_DELTA_KEYS, "IT" + it); if (drow != null && didx >= 0) base += drow[2 + didx]; }
+        return base;
+    }
+    private double getShaftDeviation(String dbKey, double size) { double[] row = findRangeRow(SHAFT_DEV_TABLE, size); if (row == null) return Double.NaN; int idx = keyIndex(SHAFT_KEYS, dbKey); return idx < 0 ? Double.NaN : row[2 + idx]; }
+    private boolean isExceptionalHole(String gradeDb, int itIndex, double size) {
+        int it = gradeNumber(itIndex);
+        if (size > 3150) return true; if ((itIndex == 0 || itIndex == 1) && size > 500) return true;
+        if (gradeDb.equals("A") || gradeDb.equals("B")) return size <= 1 || size > 500;
+        if (gradeDb.equals("C") || gradeDb.equals("J6") || gradeDb.equals("J7") || gradeDb.equals("J8")) return size > 500;
+        if (gradeDb.equals("CD") || gradeDb.equals("EF") || gradeDb.equals("FG")) return size > 50;
+        if (gradeDb.equals("J")) return true;
+        if (gradeDb.equals("K_IT1_IT8") || gradeDb.equals("M_IT1_IT8") || gradeDb.equals("N_IT1_IT8")) return itIndex < 4;
+        if (gradeDb.equals("K_IT9_IT18") || gradeDb.equals("M_IT9_IT18") || gradeDb.equals("N_IT9_IT18")) {
+            if (it < 1) return true;
+        }
+        if (gradeDb.equals("K_IT9_IT18")) return size > 3;
+        if (gradeDb.equals("P") || gradeDb.equals("R") || gradeDb.equals("S") || gradeDb.equals("U")) return itIndex < 4;
+        if (gradeDb.equals("T")) return itIndex < 4 || size <= 24;
+        if (gradeDb.equals("V")) return itIndex < 4 || size <= 14 || size > 500;
+        if (gradeDb.equals("Y")) return itIndex < 4 || size <= 18 || size > 500;
+        if (gradeDb.equals("X") || gradeDb.equals("Z") || gradeDb.equals("ZA") || gradeDb.equals("ZB") || gradeDb.equals("ZC")) return itIndex < 4 || size > 500;
+        return false;
+    }
+    private boolean isExceptionalShaft(String gradeDb, int itIndex, double size) {
+        if (size > 3150) return true; if ((itIndex == 0 || itIndex == 1) && size > 500) return true;
+        if (gradeDb.equals("a") || gradeDb.equals("b")) return size <= 1 || size > 500;
+        if (gradeDb.equals("c") || gradeDb.equals("j5") || gradeDb.equals("j6") || gradeDb.equals("j7") || gradeDb.equals("x") || gradeDb.equals("za") || gradeDb.equals("zb") || gradeDb.equals("zc")) return size > 500;
+        if (gradeDb.equals("cd") || gradeDb.equals("ef") || gradeDb.equals("fg")) return size > 50;
+        if (gradeDb.equals("k4_7") || gradeDb.equals("k1_3_8_18")) return itIndex < 2;
+        if (gradeDb.equals("j8")) return size > 3;
+        if (gradeDb.equals("t")) return size <= 24;
+        if (gradeDb.equals("v")) return size <= 14 || size > 500;
+        if (gradeDb.equals("y")) return size <= 18 || size > 500;
+        if (gradeDb.equals("j")) return true;
+        return false;
+    }
+
+    private void showTrigonometry() {
+        visualiser = null;
+        modelView = null;
+        inModelMeasure = false;
+        inIsoTolerance = false;
+        inTrigCalculator = true;
+        inProbeAngle = false;
+        setBaseRoot();
+
+        Button back = button("← Back to tools");
+        back.setOnClickListener(v -> showHome());
+        root.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        root.addView(title("Trigonometry Calculator"));
+
+        TrigDiagramView diagram = new TrigDiagramView(this);
+        diagram.setBackgroundColor(surface);
+        root.addView(diagram, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setPadding(0, dp(8), 0, dp(12));
+        scroll.addView(controls);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(330)));
+
+        TextView hint = label("Right-triangle solver. Enter any two values where possible: opposite, adjacent, hypotenuse, or angle A. Blank unknowns are calculated.");
+        controls.addView(hint);
+        LinearLayout r1 = row();
+        EditText opp = numeric("opposite");
+        EditText adj = numeric("adjacent");
+        r1.addView(wrap("Opposite", opp), weight());
+        r1.addView(wrap("Adjacent", adj), weight());
+        controls.addView(r1);
+        LinearLayout r2 = row();
+        EditText hyp = numeric("hypotenuse");
+        EditText angle = numeric("degrees");
+        r2.addView(wrap("Hypotenuse", hyp), weight());
+        r2.addView(wrap("Angle A °", angle), weight());
+        controls.addView(r2);
+        TextView result = label("");
+        result.setTextSize(16);
+        result.setPadding(0, dp(10), 0, dp(8));
+        controls.addView(result);
+        Button calc = button("Solve triangle");
+        controls.addView(calc, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+        Runnable solve = () -> {
+            TriangleResult tr = solveTriangle(parse(opp.getText().toString()), parse(adj.getText().toString()), parse(hyp.getText().toString()), parse(angle.getText().toString()));
+            result.setText(tr.message);
+            if (tr.valid) diagram.setTriangle(tr.opposite, tr.adjacent, tr.hypotenuse, tr.angleDeg);
+        };
+        calc.setOnClickListener(v -> solve.run());
+        adj.setText("40");
+        angle.setText("30");
+        solve.run();
+    }
+
+    private TriangleResult solveTriangle(Double oppIn, Double adjIn, Double hypIn, Double angleIn) {
+        Double opp = positiveOrNull(oppIn), adj = positiveOrNull(adjIn), hyp = positiveOrNull(hypIn), ang = positiveOrNull(angleIn);
+        try {
+            if (opp != null && adj != null) { hyp = Math.hypot(opp, adj); ang = Math.toDegrees(Math.atan2(opp, adj)); }
+            else if (opp != null && hyp != null) { if (opp >= hyp) return TriangleResult.error("Opposite must be less than hypotenuse."); adj = Math.sqrt(hyp * hyp - opp * opp); ang = Math.toDegrees(Math.asin(opp / hyp)); }
+            else if (adj != null && hyp != null) { if (adj >= hyp) return TriangleResult.error("Adjacent must be less than hypotenuse."); opp = Math.sqrt(hyp * hyp - adj * adj); ang = Math.toDegrees(Math.acos(adj / hyp)); }
+            else if (ang != null && hyp != null) { if (ang <= 0 || ang >= 90) return TriangleResult.error("Angle A must be between 0° and 90°."); opp = hyp * Math.sin(Math.toRadians(ang)); adj = hyp * Math.cos(Math.toRadians(ang)); }
+            else if (ang != null && adj != null) { if (ang <= 0 || ang >= 90) return TriangleResult.error("Angle A must be between 0° and 90°."); opp = adj * Math.tan(Math.toRadians(ang)); hyp = adj / Math.cos(Math.toRadians(ang)); }
+            else if (ang != null && opp != null) { if (ang <= 0 || ang >= 90) return TriangleResult.error("Angle A must be between 0° and 90°."); adj = opp / Math.tan(Math.toRadians(ang)); hyp = opp / Math.sin(Math.toRadians(ang)); }
+            else return TriangleResult.error("Enter at least two usable values.");
+        } catch (Exception ex) { return TriangleResult.error("Could not solve that triangle."); }
+        double area = 0.5 * opp * adj;
+        double other = 90.0 - ang;
+        return new TriangleResult(true, opp, adj, hyp, ang,
+                String.format(Locale.UK, "Opposite: %.4f\nAdjacent: %.4f\nHypotenuse: %.4f\nAngle A: %.4f°\nAngle B: %.4f°\nArea: %.4f", opp, adj, hyp, ang, other, area));
+    }
+
+    private Double positiveOrNull(Double v) { return v == null || v <= 0 ? null : v; }
+
+    private void showProbeAngle() {
+        visualiser = null;
+        modelView = null;
+        inModelMeasure = false;
+        inIsoTolerance = false;
+        inTrigCalculator = false;
+        inProbeAngle = true;
+        setBaseRoot();
+
+        Button back = button("← Back to tools");
+        back.setOnClickListener(v -> showHome());
+        root.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        root.addView(title("Probe Angle Calculator"));
+
+        ProbeAngleView diagram = new ProbeAngleView(this);
+        diagram.setBackgroundColor(surface);
+        root.addView(diagram, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setPadding(0, dp(8), 0, dp(12));
+        root.addView(controls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(310)));
+        TextView hint = label("Checks when the stylus stem/shaft would become the limiting contact instead of the probe ball. Uses angle from the surface normal: sin(angle) = (probe radius - shaft radius) / usable length.");
+        controls.addView(hint);
+        LinearLayout r1 = row();
+        EditText probeDia = numeric("e.g. 4");
+        EditText shaftDia = numeric("e.g. 2");
+        r1.addView(wrap("Probe ball dia", probeDia), weight());
+        r1.addView(wrap("Shaft/stem dia", shaftDia), weight());
+        controls.addView(r1);
+        EditText length = numeric("e.g. 20");
+        controls.addView(wrap("Usable length from ball centre", length));
+        TextView result = label("");
+        result.setTextSize(16);
+        result.setPadding(0, dp(10), 0, dp(8));
+        controls.addView(result);
+        Button calc = button("Calculate max angle");
+        controls.addView(calc, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+        Runnable solve = () -> {
+            String msg = calculateProbeAngle(probeDia.getText().toString(), shaftDia.getText().toString(), length.getText().toString(), diagram);
+            result.setText(msg);
+        };
+        calc.setOnClickListener(v -> solve.run());
+        probeDia.setText("4");
+        shaftDia.setText("2");
+        length.setText("20");
+        solve.run();
+    }
+
+    private String calculateProbeAngle(String probeText, String shaftText, String lengthText, ProbeAngleView diagram) {
+        Double probeDia = parse(probeText), shaftDia = parse(shaftText), length = parse(lengthText);
+        if (probeDia == null || shaftDia == null || length == null || probeDia <= 0 || shaftDia <= 0 || length <= 0) return "Enter positive probe diameter, shaft diameter, and usable length.";
+        double clearance = (probeDia - shaftDia) / 2.0;
+        if (clearance <= 0) return "Shaft/stem diameter must be smaller than the probe ball diameter.";
+        double ratio = clearance / length;
+        if (ratio >= 1) ratio = 1;
+        double angle = Math.toDegrees(Math.asin(ratio));
+        double fromSurface = 90.0 - angle;
+        diagram.setValues(probeDia, shaftDia, length, angle);
+        return String.format(Locale.UK,
+                "Max angle from surface normal: %.3f°\nEquivalent from surface: %.3f°\nRadial clearance: %.4f\nFormula: asin((probe dia - shaft dia) / 2 / length)\nAssumption: length is from probe-ball centre to the point where the stem becomes exposed/limiting.",
+                angle, fromSurface, clearance);
+    }
+
     private void showModelMeasure() {
         visualiser = null;
         inModelMeasure = true;
+        inIsoTolerance = false;
+        inTrigCalculator = false;
+        inProbeAngle = false;
         setBaseRoot();
 
         Button back = button("← Back to tools");
@@ -224,7 +762,7 @@ public class MainActivity extends Activity {
         modelStatus.setPadding(0, dp(8), 0, 0);
         controls.addView(modelStatus);
 
-        TextView hint = label("Drag to orbit. Pinch-like zoom is not needed yet: use two-finger apps later; for now the model auto-fits. Tap two visible vertices to measure. Units are model units because OBJ/STL files do not declare mm/inch reliably.");
+        TextView hint = label("Drag right to orbit right. Pinch to zoom, two-finger drag to pan, and tap two visible vertices to measure. Units are model units because OBJ/STL files do not declare mm/inch reliably.");
         hint.setPadding(0, dp(8), 0, 0);
         controls.addView(hint);
 
@@ -232,13 +770,190 @@ public class MainActivity extends Activity {
         updateModelStatus();
     }
 
+
+    private void showDrawingBallooning() {
+        visualiser = null;
+        modelView = null;
+        inModelMeasure = false;
+        inIsoTolerance = false;
+        inTrigCalculator = false;
+        inProbeAngle = false;
+        inDrawingBalloon = true;
+        setBaseRoot();
+
+        Button back = button("← Back to tools");
+        back.setOnClickListener(v -> showHome());
+        root.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        TextView title = title("Drawing Ballooning");
+        root.addView(title);
+
+        LinearLayout tabs = row();
+        Button drawingTab = button("Drawing / Edit");
+        Button tableTab = button("Table");
+        tabs.addView(drawingTab, weight());
+        tabs.addView(tableTab, weight());
+        root.addView(tabs);
+
+        drawingView = new DrawingBalloonView(this);
+        drawingView.setBackgroundColor(surface);
+        root.addView(drawingView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        ScrollView controlsScroll = new ScrollView(this);
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setPadding(0, dp(8), 0, dp(8));
+        controlsScroll.addView(controls);
+        root.addView(controlsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(290)));
+
+        Runnable showDrawingControls = () -> {
+            controls.removeAllViews();
+            LinearLayout imageRow = row();
+            Button load = button("Load drawing image");
+            Button camera = button("Take photo");
+            load.setOnClickListener(v -> openDrawingPicker());
+            camera.setOnClickListener(v -> captureDrawingPhoto());
+            imageRow.addView(load, weight());
+            imageRow.addView(camera, weight());
+            controls.addView(imageRow);
+
+            LinearLayout modeRow = row();
+            Button vLine = button("Tap vertical grid");
+            Button hLine = button("Tap horizontal grid");
+            Button addDim = button("Add dimension");
+            vLine.setOnClickListener(v -> { drawingView.mode = DrawingBalloonView.MODE_VGRID; updateDrawingStatus(); });
+            hLine.setOnClickListener(v -> { drawingView.mode = DrawingBalloonView.MODE_HGRID; updateDrawingStatus(); });
+            addDim.setOnClickListener(v -> {
+                if (!drawingView.gridReady()) { updateDrawingStatus("Add vertical + horizontal grid lines and labels before dimensioning."); return; }
+                drawingView.mode = DrawingBalloonView.MODE_DIMENSION;
+                updateDrawingStatus("Drag a box around the dimension text. Use nudge/resize buttons after adding if needed.");
+            });
+            modeRow.addView(vLine, weight()); modeRow.addView(hLine, weight()); modeRow.addView(addDim, weight());
+            controls.addView(modeRow);
+
+            LinearLayout labels = row();
+            EditText cols = textInput("A,B,C,D");
+            EditText rows = textInput("1,2,3,4");
+            cols.setText(drawingView.columnLabels);
+            rows.setText(drawingView.rowLabels);
+            labels.addView(wrap("Column letters", cols), weight());
+            labels.addView(wrap("Row numbers", rows), weight());
+            controls.addView(labels);
+            Button applyLabels = button("Apply grid labels");
+            applyLabels.setOnClickListener(v -> { drawingView.columnLabels = cols.getText().toString(); drawingView.rowLabels = rows.getText().toString(); drawingView.invalidate(); updateDrawingStatus(); });
+            controls.addView(applyLabels, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+
+            LinearLayout editRow = row();
+            Button undo = button("Undo line/balloon");
+            Button clear = button("Clear drawing setup");
+            undo.setOnClickListener(v -> { drawingView.undoLast(); updateDrawingStatus(); });
+            clear.setOnClickListener(v -> { balloonRecords.clear(); drawingView.clearSetup(); updateDrawingStatus(); });
+            editRow.addView(undo, weight()); editRow.addView(clear, weight());
+            controls.addView(editRow);
+
+            LinearLayout adjust = row();
+            Button smaller = button("Box -");
+            Button larger = button("Box +");
+            Button left = button("◀");
+            Button right = button("▶");
+            smaller.setOnClickListener(v -> drawingView.adjustSelected(-4, 0, 0));
+            larger.setOnClickListener(v -> drawingView.adjustSelected(4, 0, 0));
+            left.setOnClickListener(v -> drawingView.adjustSelected(0, -4, 0));
+            right.setOnClickListener(v -> drawingView.adjustSelected(0, 4, 0));
+            adjust.addView(smaller, weight()); adjust.addView(larger, weight()); adjust.addView(left, weight()); adjust.addView(right, weight());
+            controls.addView(adjust);
+
+            drawingStatus = label("");
+            drawingStatus.setPadding(0, dp(8), 0, 0);
+            controls.addView(drawingStatus);
+            TextView hint = label("Workflow: load/take a drawing image, tap grid lines, enter column/row labels, then add dimensions by dragging boxes. Pan with one finger outside add modes; pinch to zoom. Grid is faint during dimensioning.");
+            hint.setPadding(0, dp(8), 0, 0);
+            controls.addView(hint);
+            updateDrawingStatus();
+        };
+
+        Runnable showTableControls = () -> {
+            controls.removeAllViews();
+            TextView hint = label("Editable balloon table. OCR is seeded as manual text in this dependency-light release, so correct or type the drawing callout, tolerances, result, and GD&T details here.");
+            controls.addView(hint);
+            for (BalloonRecord r : balloonRecords) controls.addView(recordEditor(r));
+            if (balloonRecords.isEmpty()) controls.addView(label("No balloons yet. Use Drawing / Edit → Add dimension."));
+        };
+        drawingTab.setOnClickListener(v -> showDrawingControls.run());
+        tableTab.setOnClickListener(v -> showTableControls.run());
+        showDrawingControls.run();
+    }
+
+    private View recordEditor(BalloonRecord r) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(6), dp(8), dp(6), dp(8));
+        box.setBackgroundColor(surface);
+        TextView heading = label("Balloon " + r.number + "   Grid " + r.gridRef);
+        heading.setTextColor(text);
+        box.addView(heading);
+        EditText what = textInput("dimension / note"); what.setText(r.what);
+        EditText plus = textInput("+tol"); plus.setText(r.plusTol);
+        EditText minus = textInput("-tol"); minus.setText(r.minusTol);
+        EditText result = textInput("result"); result.setText(r.result);
+        EditText gdt = textInput("GD&T type / note"); gdt.setText(r.gdtType);
+        Button isGdt = button(r.isGdt ? "✓ GD&T" : "Linear/tolerance");
+        isGdt.setOnClickListener(v -> { r.isGdt = !r.isGdt; isGdt.setText(r.isGdt ? "✓ GD&T" : "Linear/tolerance"); });
+        TextWatcher watcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+            @Override public void afterTextChanged(Editable e) { r.what = what.getText().toString(); r.plusTol = plus.getText().toString(); r.minusTol = minus.getText().toString(); r.result = result.getText().toString(); r.gdtType = gdt.getText().toString(); }
+        };
+        what.addTextChangedListener(watcher); plus.addTextChangedListener(watcher); minus.addTextChangedListener(watcher); result.addTextChangedListener(watcher); gdt.addTextChangedListener(watcher);
+        box.addView(wrap("What it is / OCR text", what));
+        LinearLayout tolRow = row(); tolRow.addView(wrap("+tol", plus), weight()); tolRow.addView(wrap("-tol", minus), weight()); tolRow.addView(wrap("Result", result), weight()); box.addView(tolRow);
+        LinearLayout gdtRow = row(); gdtRow.addView(isGdt, weight()); gdtRow.addView(wrap("GD&T", gdt), weight()); box.addView(gdtRow);
+        return box;
+    }
+
+    private void openDrawingPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_OPEN_DRAWING);
+    }
+
+    private void captureDrawingPhoto() {
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        try { startActivityForResult(intent, REQUEST_CAPTURE_DRAWING); }
+        catch (Exception ex) { updateDrawingStatus("No camera app available: " + ex.getMessage()); }
+    }
+
+    private void loadDrawingUri(Uri uri) {
+        try {
+            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {}
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            Bitmap bmp = BitmapFactory.decodeStream(in);
+            if (bmp == null) throw new Exception("image could not be decoded");
+            if (drawingView != null) drawingView.setDrawing(bmp);
+            updateDrawingStatus("Loaded " + displayName(uri) + ". Add drawing grid lines before dimensioning.");
+        } catch (Exception ex) {
+            Log.e(TAG, "Could not load drawing", ex);
+            updateDrawingStatus("Could not load drawing: " + ex.getMessage());
+        }
+    }
+
+    private void updateDrawingStatus() { updateDrawingStatus(null); }
+    private void updateDrawingStatus(String extra) {
+        if (drawingStatus == null || drawingView == null) return;
+        String mode = drawingView.modeName();
+        String grid = drawingView.gridReady() ? "Grid ready" : "Grid required";
+        String image = drawingView.bitmap == null ? "No drawing image loaded" : "Drawing loaded";
+        drawingStatus.setText(image + "\n" + grid + " · " + mode + "\nBalloons: " + balloonRecords.size() + (extra == null ? "" : "\n" + extra));
+    }
+
     private void openModelPicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
-                "application/sla", "application/octet-stream", "text/plain", "model/obj", "text/*"
-        });
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, REQUEST_OPEN_MODEL);
     }
 
@@ -251,6 +966,16 @@ public class MainActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) {}
             loadModelUri(uri);
+        } else if (requestCode == REQUEST_OPEN_DRAWING && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            loadDrawingUri(data.getData());
+        } else if (requestCode == REQUEST_CAPTURE_DRAWING && resultCode == RESULT_OK && data != null) {
+            Object photo = data.getExtras() == null ? null : data.getExtras().get("data");
+            if (photo instanceof Bitmap && drawingView != null) {
+                drawingView.setDrawing((Bitmap)photo);
+                updateDrawingStatus("Camera photo loaded. Add drawing grid lines before dimensioning.");
+            } else {
+                updateDrawingStatus("Camera returned no image; use Load drawing image if this phone only saves full-resolution captures.");
+            }
         }
     }
 
@@ -267,8 +992,10 @@ public class MainActivity extends Activity {
                     }
                 });
             } catch (Exception ex) {
+                Log.e(TAG, "Could not import model from " + uri, ex);
                 runOnUiThread(() -> {
-                    if (modelStatus != null) modelStatus.setText("Could not import model: " + ex.getMessage());
+                    if (modelView != null) modelView.clearModel();
+                    if (modelStatus != null) modelStatus.setText("Could not import " + name + ": " + ex.getMessage() + "\nTry an OBJ or STL export under 24 MB.");
                 });
             }
         }).start();
@@ -278,14 +1005,20 @@ public class MainActivity extends Activity {
         byte[] bytes;
         try (InputStream in = getContentResolver().openInputStream(uri)) {
             if (in == null) throw new Exception("no readable stream");
-            bytes = readAll(in, 6 * 1024 * 1024);
+            bytes = readAll(in, MODEL_MAX_BYTES);
         }
         String lower = name.toLowerCase(Locale.UK);
         if (lower.endsWith(".obj")) return parseObj(new String(bytes, StandardCharsets.UTF_8), name);
         if (looksBinaryStl(bytes)) return parseBinaryStl(bytes, name);
-        ModelData stl = parseAsciiStl(new String(bytes, StandardCharsets.UTF_8), name);
+        String textData = new String(bytes, StandardCharsets.UTF_8);
+        if (lower.endsWith(".stl")) {
+            ModelData stl = parseAsciiStl(textData, name);
+            if (stl.vertices.size() > 0) return stl;
+            throw new Exception("no ASCII STL vertices found");
+        }
+        ModelData stl = parseAsciiStl(textData, name);
         if (stl.vertices.size() > 0) return stl;
-        return parseObj(new String(bytes, StandardCharsets.UTF_8), name);
+        return parseObj(textData, name);
     }
 
     private byte[] readAll(InputStream in, int maxBytes) throws Exception {
@@ -295,7 +1028,7 @@ public class MainActivity extends Activity {
         int n;
         while ((n = in.read(buf)) != -1) {
             total += n;
-            if (total > maxBytes) throw new Exception("file is over 6 MB; simplify it first");
+            if (total > maxBytes) throw new Exception("file is over " + (maxBytes / (1024 * 1024)) + " MB; simplify it first");
             out.write(buf, 0, n);
         }
         return out.toByteArray();
@@ -316,7 +1049,8 @@ public class MainActivity extends Activity {
         if (bytes.length < 84) return false;
         ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         long triCount = bb.getInt(80) & 0xffffffffL;
-        return 84L + triCount * 50L == bytes.length;
+        long expected = 84L + triCount * 50L;
+        return triCount > 0 && expected <= bytes.length && expected > 84L;
     }
 
     private ModelData parseObj(String textData, String name) throws Exception {
@@ -373,6 +1107,8 @@ public class MainActivity extends Activity {
         ModelData model = new ModelData(name);
         ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         int triCount = bb.getInt(80);
+        long expected = 84L + ((long)triCount) * 50L;
+        if (triCount <= 0 || expected > bytes.length) throw new Exception("invalid binary STL triangle count");
         int pos = 84;
         for (int t = 0; t < triCount; t++) {
             pos += 12; // normal
@@ -425,7 +1161,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (visualiser != null || inModelMeasure) {
+        if (visualiser != null || inModelMeasure || inIsoTolerance || inTrigCalculator || inProbeAngle || inDrawingBalloon) {
             showHome();
         } else {
             super.onBackPressed();
@@ -560,6 +1296,18 @@ public class MainActivity extends Activity {
         return e;
     }
 
+    private EditText textInput(String hint) {
+        EditText e = new EditText(this);
+        e.setHint(hint);
+        e.setTextColor(text);
+        e.setHintTextColor(muted);
+        e.setSingleLine(true);
+        e.setInputType(InputType.TYPE_CLASS_TEXT);
+        e.setBackgroundColor(surface2);
+        e.setPadding(dp(8), 0, dp(8), 0);
+        return e;
+    }
+
     private LinearLayout row() {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.HORIZONTAL);
@@ -620,12 +1368,110 @@ public class MainActivity extends Activity {
         Vec3 center() { return new Vec3((minX + maxX) / 2.0, (minY + maxY) / 2.0, (minZ + maxZ) / 2.0); }
     }
 
+    static class TriangleResult {
+        boolean valid;
+        double opposite, adjacent, hypotenuse, angleDeg;
+        String message;
+        TriangleResult(boolean valid, double opposite, double adjacent, double hypotenuse, double angleDeg, String message) {
+            this.valid = valid; this.opposite = opposite; this.adjacent = adjacent; this.hypotenuse = hypotenuse; this.angleDeg = angleDeg; this.message = message;
+        }
+        static TriangleResult error(String message) { return new TriangleResult(false, 0, 0, 0, 0, message); }
+    }
+
+    public class TrigDiagramView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private double opp = 23.094, adj = 40, hyp = 46.188, angle = 30;
+        public TrigDiagramView(Activity context) { super(context); }
+        public void setTriangle(double opposite, double adjacent, double hypotenuse, double angleDeg) { opp = opposite; adj = adjacent; hyp = hypotenuse; angle = angleDeg; invalidate(); }
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            canvas.drawColor(surface);
+            int w = getWidth(), h = getHeight();
+            float margin = dp(36);
+            float maxW = Math.max(1, w - margin * 2);
+            float maxH = Math.max(1, h - margin * 2 - dp(30));
+            float scale = (float)Math.min(maxW / Math.max(adj, 1), maxH / Math.max(opp, 1));
+            float x0 = margin;
+            float y0 = h - margin;
+            float x1 = x0 + (float)(adj * scale);
+            float y1 = y0;
+            float x2 = x1;
+            float y2 = y0 - (float)(opp * scale);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(4));
+            paint.setColor(pink);
+            canvas.drawLine(x0, y0, x1, y1, paint);
+            paint.setColor(Color.rgb(110, 220, 255));
+            canvas.drawLine(x1, y1, x2, y2, paint);
+            paint.setColor(Color.rgb(255, 220, 120));
+            canvas.drawLine(x0, y0, x2, y2, paint);
+            paint.setStrokeWidth(dp(2));
+            paint.setColor(muted);
+            canvas.drawLine(x1 - dp(18), y1, x1 - dp(18), y1 - dp(18), paint);
+            canvas.drawLine(x1 - dp(18), y1 - dp(18), x1, y1 - dp(18), paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(dp(15));
+            paint.setColor(text);
+            canvas.drawText("Right triangle", dp(14), dp(24), paint);
+            paint.setColor(muted);
+            canvas.drawText(String.format(Locale.UK, "A %.2f°", angle), x0 + dp(8), y0 - dp(10), paint);
+            canvas.drawText(String.format(Locale.UK, "adj %.3f", adj), (x0 + x1) / 2 - dp(25), y0 + dp(24), paint);
+            canvas.drawText(String.format(Locale.UK, "opp %.3f", opp), x1 + dp(8), (y1 + y2) / 2, paint);
+            canvas.drawText(String.format(Locale.UK, "hyp %.3f", hyp), (x0 + x2) / 2 - dp(20), (y0 + y2) / 2 - dp(10), paint);
+        }
+    }
+
+    public class ProbeAngleView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private double probeDia = 4, shaftDia = 2, length = 20, angle = 2.866;
+        public ProbeAngleView(Activity context) { super(context); }
+        public void setValues(double probeDia, double shaftDia, double length, double angle) { this.probeDia = probeDia; this.shaftDia = shaftDia; this.length = length; this.angle = angle; invalidate(); }
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            canvas.drawColor(surface);
+            int w = getWidth(), h = getHeight();
+            float cx = w / 2f;
+            float by = h - dp(44);
+            float ballR = Math.max(dp(20), Math.min(w, h) * 0.12f);
+            float stemR = (float)(ballR * Math.max(0.15, shaftDia / Math.max(probeDia, 0.001)));
+            float stemLen = Math.min(h * 0.55f, Math.max(dp(70), (float)(length / Math.max(probeDia, 0.001) * ballR * 0.8)));
+            double a = Math.toRadians(angle);
+            float dx = (float)(Math.sin(a) * stemLen);
+            float dy = (float)(Math.cos(a) * stemLen);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(50, 42, 62));
+            canvas.drawRect(0, by + ballR, w, h, paint);
+            paint.setColor(Color.rgb(110, 220, 255));
+            paint.setStrokeWidth(stemR * 2);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            canvas.drawLine(cx, by, cx + dx, by - dy, paint);
+            paint.setColor(pink);
+            canvas.drawCircle(cx, by, ballR, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(2));
+            paint.setColor(Color.rgb(255, 220, 120));
+            canvas.drawLine(cx, by, cx, by - stemLen * 0.55f, paint);
+            canvas.drawLine(cx, by, cx + dx, by - dy, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(dp(15));
+            paint.setColor(text);
+            canvas.drawText("Probe/stylus clearance", dp(14), dp(24), paint);
+            paint.setColor(muted);
+            canvas.drawText(String.format(Locale.UK, "Max from normal %.3f°", angle), dp(14), dp(45), paint);
+            canvas.drawText(String.format(Locale.UK, "Ball Ø%.3f  Stem Ø%.3f  Length %.3f", probeDia, shaftDia, length), dp(14), dp(66), paint);
+        }
+    }
+
     public class ModelMeasureView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private ModelData model;
         private float yaw = -35f;
         private float pitch = 25f;
+        private float zoom = 1f;
+        private float panX = 0f, panY = 0f;
         private float lastX, lastY, downX, downY;
+        private float lastSpan = 0f, lastMidX = 0f, lastMidY = 0f;
+        private boolean twoFingerGesture = false;
         private int selectedA = -1, selectedB = -1;
         private float[] screenX = new float[0];
         private float[] screenY = new float[0];
@@ -636,9 +1482,17 @@ public class MainActivity extends Activity {
             this.model = model;
             selectedA = -1;
             selectedB = -1;
-            screenX = new float[model.vertices.size()];
-            screenY = new float[model.vertices.size()];
+            zoom = 1f;
+            panX = 0f;
+            panY = 0f;
+            int count = model == null ? 0 : model.vertices.size();
+            screenX = new float[count];
+            screenY = new float[count];
             invalidate();
+        }
+
+        public void clearModel() {
+            setModel(null);
         }
 
         public void clearSelection() {
@@ -662,8 +1516,8 @@ public class MainActivity extends Activity {
             if (model == null || model.vertices.size() == 0) return;
 
             int w = getWidth(), h = getHeight();
-            float cx = w / 2f, cy = h / 2f + dp(10);
-            float scale = (float)(Math.min(w, h) * 0.72 / Math.max(1.0, model.maxDim()));
+            float cx = w / 2f + panX, cy = h / 2f + dp(10) + panY;
+            float scale = (float)(Math.min(w, h) * 0.72 * zoom / Math.max(1.0, model.maxDim()));
             Vec3 center = model.center();
 
             for (int n = 0; n < model.vertices.size(); n++) {
@@ -702,7 +1556,7 @@ public class MainActivity extends Activity {
             canvas.drawText("Wireframe model viewer", dp(14), dp(24), paint);
             paint.setColor(muted);
             paint.setTextSize(dp(13));
-            canvas.drawText("Drag to orbit. Tap vertices for A/B measurement.", dp(14), dp(44), paint);
+            canvas.drawText("Drag to orbit. Pinch zoom, two-finger pan. Tap vertices for A/B.", dp(14), dp(44), paint);
         }
 
         private void drawEdge(Canvas c, int a, int b) {
@@ -732,25 +1586,72 @@ public class MainActivity extends Activity {
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                twoFingerGesture = false;
                 lastX = downX = event.getX();
                 lastY = downY = event.getY();
                 return true;
             }
-            if (event.getAction() == MotionEvent.ACTION_MOVE) {
-                yaw -= (event.getX() - lastX) * 0.45f;
-                pitch -= (event.getY() - lastY) * 0.45f;
-                pitch = Math.max(-170f, Math.min(170f, pitch));
-                lastX = event.getX(); lastY = event.getY(); invalidate(); return true;
+            if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() >= 2) {
+                twoFingerGesture = true;
+                lastSpan = pointerSpan(event);
+                lastMidX = pointerMidX(event);
+                lastMidY = pointerMidY(event);
+                return true;
             }
-            if (event.getAction() == MotionEvent.ACTION_UP) {
+            if (action == MotionEvent.ACTION_MOVE) {
+                if (event.getPointerCount() >= 2) {
+                    float span = pointerSpan(event);
+                    float midX = pointerMidX(event);
+                    float midY = pointerMidY(event);
+                    if (lastSpan > 1f) {
+                        zoom *= span / lastSpan;
+                        zoom = Math.max(0.2f, Math.min(8f, zoom));
+                    }
+                    panX += midX - lastMidX;
+                    panY += midY - lastMidY;
+                    lastSpan = span;
+                    lastMidX = midX;
+                    lastMidY = midY;
+                    invalidate();
+                    return true;
+                }
+                if (!twoFingerGesture) {
+                    yaw += (event.getX() - lastX) * 0.45f;
+                    pitch -= (event.getY() - lastY) * 0.45f;
+                    pitch = Math.max(-170f, Math.min(170f, pitch));
+                    lastX = event.getX(); lastY = event.getY(); invalidate();
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_UP) {
+                if (event.getPointerCount() <= 2) {
+                    twoFingerGesture = true;
+                    int keep = event.getActionIndex() == 0 ? 1 : 0;
+                    lastX = event.getX(keep);
+                    lastY = event.getY(keep);
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_UP) {
                 float dx = event.getX() - downX;
                 float dy = event.getY() - downY;
-                if (Math.sqrt(dx * dx + dy * dy) < dp(8)) pickVertex(event.getX(), event.getY());
+                if (!twoFingerGesture && Math.sqrt(dx * dx + dy * dy) < dp(8)) pickVertex(event.getX(), event.getY());
                 return true;
             }
             return true;
         }
+
+        private float pointerSpan(MotionEvent event) {
+            if (event.getPointerCount() < 2) return 0f;
+            float dx = event.getX(0) - event.getX(1);
+            float dy = event.getY(0) - event.getY(1);
+            return (float)Math.sqrt(dx * dx + dy * dy);
+        }
+
+        private float pointerMidX(MotionEvent event) { return (event.getX(0) + event.getX(1)) / 2f; }
+        private float pointerMidY(MotionEvent event) { return (event.getY(0) + event.getY(1)) / 2f; }
 
         private void pickVertex(float x, float y) {
             if (model == null || screenX.length == 0) return;
@@ -772,6 +1673,129 @@ public class MainActivity extends Activity {
                 updateModelStatus();
                 invalidate();
             }
+        }
+    }
+
+
+    static class BalloonRecord {
+        int number;
+        RectF rect;
+        String what = "OCR/manual text";
+        String plusTol = "";
+        String minusTol = "";
+        String result = "";
+        String gridRef = "";
+        boolean isGdt = false;
+        String gdtType = "position / flatness / parallelism";
+        BalloonRecord(int number, RectF rect, String gridRef) { this.number = number; this.rect = rect; this.gridRef = gridRef; }
+    }
+
+    public class DrawingBalloonView extends View {
+        static final int MODE_PAN = 0, MODE_VGRID = 1, MODE_HGRID = 2, MODE_DIMENSION = 3;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Bitmap bitmap;
+        int mode = MODE_PAN;
+        String columnLabels = "A,B,C,D";
+        String rowLabels = "1,2,3,4";
+        ArrayList<Float> verticals = new ArrayList<>();
+        ArrayList<Float> horizontals = new ArrayList<>();
+        float scale = 1f, panX = 0f, panY = 0f;
+        float lastX, lastY, lastDist = 0f;
+        RectF draft;
+        int selected = -1;
+
+        public DrawingBalloonView(Activity context) { super(context); }
+        void setDrawing(Bitmap bmp) { bitmap = bmp; fit(); invalidate(); }
+        void fit() {
+            if (bitmap == null || getWidth() == 0 || getHeight() == 0) return;
+            scale = Math.min(getWidth() / (float)bitmap.getWidth(), getHeight() / (float)bitmap.getHeight());
+            if (scale <= 0) scale = 1f;
+            panX = (getWidth() - bitmap.getWidth() * scale) / 2f;
+            panY = (getHeight() - bitmap.getHeight() * scale) / 2f;
+        }
+        @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { super.onSizeChanged(w,h,oldw,oldh); if (oldw == 0 && oldh == 0) fit(); }
+        String modeName() { if (mode == MODE_VGRID) return "Tap vertical grid lines"; if (mode == MODE_HGRID) return "Tap horizontal grid lines"; if (mode == MODE_DIMENSION) return "Drag dimension box"; return "Pan/zoom"; }
+        boolean gridReady() { return verticals.size() >= 1 && horizontals.size() >= 1 && labels(columnLabels).length > 0 && labels(rowLabels).length > 0; }
+        void clearSetup() { verticals.clear(); horizontals.clear(); draft = null; selected = -1; mode = MODE_PAN; invalidate(); }
+        void undoLast() {
+            if (mode == MODE_HGRID && horizontals.size() > 0) horizontals.remove(horizontals.size()-1);
+            else if (mode == MODE_VGRID && verticals.size() > 0) verticals.remove(verticals.size()-1);
+            else if (balloonRecords.size() > 0) balloonRecords.remove(balloonRecords.size()-1);
+            invalidate();
+        }
+        void adjustSelected(float sizeDelta, float dx, float dy) {
+            if (selected < 0 || selected >= balloonRecords.size()) return;
+            RectF r = balloonRecords.get(selected).rect;
+            r.inset(-sizeDelta, -sizeDelta); r.offset(dx / scale, dy / scale);
+            balloonRecords.get(selected).gridRef = gridRef(r.centerX(), r.centerY());
+            invalidate();
+        }
+        @Override protected void onDraw(Canvas canvas) {
+            canvas.drawColor(surface);
+            if (bitmap == null) {
+                paint.setColor(muted); paint.setTextSize(dp(16));
+                canvas.drawText("Load or take a drawing image to begin.", dp(18), dp(40), paint); return;
+            }
+            canvas.save(); canvas.translate(panX, panY); canvas.scale(scale, scale); canvas.drawBitmap(bitmap, 0, 0, paint);
+            drawGrid(canvas); drawBalloons(canvas); if (draft != null) drawRect(canvas, draft, Color.rgb(255,220,120), 2f / scale); canvas.restore();
+        }
+        private void drawGrid(Canvas c) {
+            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2f / scale);
+            paint.setColor(mode == MODE_DIMENSION ? Color.argb(70, 214,107,160) : Color.argb(185, 214,107,160));
+            for (float x: verticals) c.drawLine(x, 0, x, bitmap.getHeight(), paint);
+            for (float y: horizontals) c.drawLine(0, y, bitmap.getWidth(), y, paint);
+            paint.setStyle(Paint.Style.FILL); paint.setTextSize(18f / scale); paint.setColor(Color.argb(210,247,236,243));
+            String[] cols = labels(columnLabels); for (int i=0;i<cols.length && i<verticals.size();i++) c.drawText(cols[i], verticals.get(i)+4/scale, 20/scale, paint);
+            String[] rows = labels(rowLabels); for (int i=0;i<rows.length && i<horizontals.size();i++) c.drawText(rows[i], 4/scale, horizontals.get(i)-4/scale, paint);
+        }
+        private void drawBalloons(Canvas c) {
+            for (int idx=0; idx<balloonRecords.size(); idx++) {
+                BalloonRecord r = balloonRecords.get(idx); drawRect(c, r.rect, idx==selected ? Color.rgb(255,220,120) : pink, 2f / scale);
+                float bx = r.rect.right + 18f / scale, by = r.rect.top - 10f / scale, rad = 15f / scale;
+                paint.setStyle(Paint.Style.FILL); paint.setColor(Color.argb(235, 18,16,23)); c.drawCircle(bx, by, rad, paint);
+                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2f/scale); paint.setColor(pink); c.drawCircle(bx, by, rad, paint);
+                paint.setStyle(Paint.Style.FILL); paint.setColor(text); paint.setTextSize(15f / scale); paint.setTextAlign(Paint.Align.CENTER); c.drawText(String.valueOf(r.number), bx, by + 5f/scale, paint); paint.setTextAlign(Paint.Align.LEFT);
+            }
+        }
+        private void drawRect(Canvas c, RectF r, int colour, float sw) { paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(sw); paint.setColor(colour); c.drawRect(r, paint); paint.setStyle(Paint.Style.FILL); }
+        private float imgX(float sx) { return (sx - panX) / scale; }
+        private float imgY(float sy) { return (sy - panY) / scale; }
+        private String[] labels(String s) { return s == null || s.trim().isEmpty() ? new String[0] : s.trim().split("\\s*,\\s*"); }
+        private String gridRef(float x, float y) {
+            String[] cols = labels(columnLabels), rows = labels(rowLabels);
+            int ci = nearestIndex(verticals, x), ri = nearestIndex(horizontals, y);
+            String c = (ci >= 0 && ci < cols.length) ? cols[ci] : "?";
+            String r = (ri >= 0 && ri < rows.length) ? rows[ri] : "?";
+            return c + r;
+        }
+        private int nearestIndex(ArrayList<Float> vals, float v) { int best=-1; float bd=Float.MAX_VALUE; for (int i=0;i<vals.size();i++){ float d=Math.abs(vals.get(i)-v); if(d<bd){bd=d; best=i;}} return best; }
+        private float spacing(ArrayList<Float> vals) { if (vals.size()<2) return 50f; ArrayList<Float> copy = new ArrayList<>(vals); java.util.Collections.sort(copy); return Math.max(20f, Math.abs(copy.get(1)-copy.get(0))); }
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            if (bitmap == null) return true;
+            if (e.getPointerCount() == 2) {
+                float dx = e.getX(0)-e.getX(1), dy = e.getY(0)-e.getY(1), dist = (float)Math.sqrt(dx*dx+dy*dy);
+                if (e.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN) lastDist = dist;
+                else if (e.getActionMasked() == MotionEvent.ACTION_MOVE && lastDist > 0) { float f = dist / lastDist; scale = Math.max(0.15f, Math.min(8f, scale*f)); lastDist = dist; invalidate(); }
+                return true;
+            }
+            if (e.getAction() == MotionEvent.ACTION_DOWN) { lastX=e.getX(); lastY=e.getY(); if (mode==MODE_DIMENSION) draft = new RectF(imgX(lastX), imgY(lastY), imgX(lastX), imgY(lastY)); return true; }
+            if (e.getAction() == MotionEvent.ACTION_MOVE) {
+                if (mode==MODE_DIMENSION && draft != null) { draft.right=imgX(e.getX()); draft.bottom=imgY(e.getY()); invalidate(); }
+                else if (mode==MODE_PAN) { panX += e.getX()-lastX; panY += e.getY()-lastY; lastX=e.getX(); lastY=e.getY(); invalidate(); }
+                return true;
+            }
+            if (e.getAction() == MotionEvent.ACTION_UP) {
+                float x=imgX(e.getX()), y=imgY(e.getY());
+                if (mode==MODE_VGRID) { verticals.add(x); java.util.Collections.sort(verticals); invalidate(); updateDrawingStatus(); }
+                else if (mode==MODE_HGRID) { horizontals.add(y); java.util.Collections.sort(horizontals); invalidate(); updateDrawingStatus(); }
+                else if (mode==MODE_DIMENSION && draft != null) {
+                    draft.sort(); if (draft.width() < 8) draft.right = draft.left + spacing(verticals) * 0.4f; if (draft.height() < 8) draft.bottom = draft.top + spacing(horizontals) * 0.35f;
+                    BalloonRecord r = new BalloonRecord(balloonRecords.size()+1, new RectF(draft), gridRef(draft.centerX(), draft.centerY()));
+                    balloonRecords.add(r); selected = balloonRecords.size()-1; draft = null; mode = MODE_PAN; invalidate(); updateDrawingStatus("Balloon " + r.number + " added at grid " + r.gridRef + ". Open Table to edit OCR/text and tolerances.");
+                }
+                return true;
+            }
+            return true;
         }
     }
 
