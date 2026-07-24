@@ -24,7 +24,7 @@ Visualise a direction vector used in CMM programming:
 - Home screen with function buttons.
 - IJK visualiser with red/green/blue origin triad.
 - Direction arrow updated live from angle sliders or typed values.
-- Manual entry for XY angle, Z/elevation angle, and I/J/K vector values.
+- Free-form manual entry for XY angle, Z/elevation angle, and I/J/K vector values without the active field being reformatted while typing.
 - Touch-drag 3D view rotation so the vector can be inspected from any direction.
 
 ### Model Measure
@@ -68,6 +68,8 @@ Estimate the maximum probing angle before the stylus shaft/stem becomes the limi
 
 - Inputs probe ball diameter, shaft/stem diameter, and usable length from ball centre.
 - Outputs max angle from surface normal and equivalent angle from the surface.
+- Updates a clean, lightweight probe/stylus preview live while values are typed.
+- Uses a scrollable layout so the complete calculator remains accessible on smaller screens.
 - Uses `asin((probe diameter - shaft diameter) / 2 / usable length)` with a clear assumption note in the app.
 
 ## Build

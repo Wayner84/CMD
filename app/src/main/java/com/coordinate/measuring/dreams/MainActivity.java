@@ -5,8 +5,10 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
@@ -645,14 +647,21 @@ public class MainActivity extends Activity {
         root.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         root.addView(title("Probe Angle Calculator"));
 
+        ScrollView page = new ScrollView(this);
+        page.setFillViewport(true);
+        LinearLayout pageContent = new LinearLayout(this);
+        pageContent.setOrientation(LinearLayout.VERTICAL);
+        page.addView(pageContent, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(page, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
         ProbeAngleView diagram = new ProbeAngleView(this);
         diagram.setBackgroundColor(surface);
-        root.addView(diagram, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        pageContent.addView(diagram, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
 
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setPadding(0, dp(8), 0, dp(12));
-        root.addView(controls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(310)));
+        pageContent.addView(controls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         TextView hint = label("Checks when the stylus stem/shaft would become the limiting contact instead of the probe ball. Uses angle from the surface normal: sin(angle) = (probe radius - shaft radius) / usable length.");
         controls.addView(hint);
         LinearLayout r1 = row();
@@ -677,7 +686,20 @@ public class MainActivity extends Activity {
         probeDia.setText("4");
         shaftDia.setText("2");
         length.setText("20");
+        addProbeWatcher(probeDia, solve);
+        addProbeWatcher(shaftDia, solve);
+        addProbeWatcher(length, solve);
         solve.run();
+    }
+
+    private void addProbeWatcher(EditText edit, Runnable solve) {
+        edit.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+            @Override public void afterTextChanged(Editable e) {
+                if (edit.hasFocus()) solve.run();
+            }
+        });
     }
 
     private String calculateProbeAngle(String probeText, String shaftText, String lengthText, ProbeAngleView diagram) {
@@ -983,7 +1005,7 @@ public class MainActivity extends Activity {
                 Double val = parse(e.toString());
                 if (val == null) return;
                 if (xy) xyDeg = val; else zDeg = Math.max(-90, Math.min(90, val));
-                updateFromAngles(false);
+                updateFromAngles(true);
             }
         });
     }
@@ -998,7 +1020,7 @@ public class MainActivity extends Activity {
                 Double jj = parse(jInput.getText().toString());
                 Double kk = parse(kInput.getText().toString());
                 if (ii == null || jj == null || kk == null) return;
-                setVector(ii, jj, kk, false);
+                setVector(ii, jj, kk, true);
             }
         });
     }
@@ -1023,18 +1045,18 @@ public class MainActivity extends Activity {
         refreshUi(keepTextFocus);
     }
 
-    private void refreshUi(boolean keepTextFocus) {
+    private void refreshUi(boolean preserveFocusedInput) {
         editing = true;
         xySeek.setProgress((int)Math.round(positiveDeg(xyDeg) * 10));
         zSeek.setProgress((int)Math.round((zDeg + 90.0) * 10));
         xyValue.setText(String.format(Locale.UK, "XY angle: %.1f°", positiveDeg(xyDeg)));
         zValue.setText(String.format(Locale.UK, "Z/elevation: %.1f°", zDeg));
-        xyInput.setText(String.format(Locale.UK, "%.3f", positiveDeg(xyDeg)));
-        zInput.setText(String.format(Locale.UK, "%.3f", zDeg));
-        iInput.setText(String.format(Locale.UK, "%.6f", i));
-        jInput.setText(String.format(Locale.UK, "%.6f", j));
-        kInput.setText(String.format(Locale.UK, "%.6f", k));
-        if (!keepTextFocus) {
+        if (!preserveFocusedInput || !xyInput.hasFocus()) xyInput.setText(String.format(Locale.UK, "%.3f", positiveDeg(xyDeg)));
+        if (!preserveFocusedInput || !zInput.hasFocus()) zInput.setText(String.format(Locale.UK, "%.3f", zDeg));
+        if (!preserveFocusedInput || !iInput.hasFocus()) iInput.setText(String.format(Locale.UK, "%.6f", i));
+        if (!preserveFocusedInput || !jInput.hasFocus()) jInput.setText(String.format(Locale.UK, "%.6f", j));
+        if (!preserveFocusedInput || !kInput.hasFocus()) kInput.setText(String.format(Locale.UK, "%.6f", k));
+        if (!preserveFocusedInput) {
             xyInput.clearFocus(); zInput.clearFocus(); iInput.clearFocus(); jInput.clearFocus(); kInput.clearFocus();
         }
         editing = false;
@@ -1225,34 +1247,57 @@ public class MainActivity extends Activity {
             canvas.drawColor(surface);
             int w = getWidth(), h = getHeight();
             float cx = w / 2f;
-            float by = h - dp(44);
-            float ballR = Math.max(dp(20), Math.min(w, h) * 0.12f);
-            float stemR = (float)(ballR * Math.max(0.15, shaftDia / Math.max(probeDia, 0.001)));
-            float stemLen = Math.min(h * 0.55f, Math.max(dp(70), (float)(length / Math.max(probeDia, 0.001) * ballR * 0.8)));
+            float by = h - dp(38);
+            float ballR = Math.max(dp(16), Math.min(dp(28), Math.min(w, h) * 0.10f));
+            float diameterRatio = (float)Math.max(0.08, shaftDia / Math.max(probeDia, 0.001));
+            float shaftWidth = Math.max(dp(4), Math.min(dp(18), ballR * 2f * diameterRatio));
+            float requestedLength = (float)(length / Math.max(probeDia, 0.001) * ballR * 0.55);
+            float stemLen = Math.min(Math.min(h * 0.48f, w * 0.34f), Math.max(dp(72), requestedLength));
             double a = Math.toRadians(angle);
             float dx = (float)(Math.sin(a) * stemLen);
             float dy = (float)(Math.cos(a) * stemLen);
+
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.rgb(50, 42, 62));
             canvas.drawRect(0, by + ballR, w, h, paint);
-            paint.setColor(Color.rgb(110, 220, 255));
-            paint.setStrokeWidth(stemR * 2);
+            paint.setStrokeWidth(dp(1));
+            paint.setColor(Color.rgb(100, 82, 118));
+            canvas.drawLine(0, by + ballR, w, by + ballR, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(1));
+            paint.setColor(Color.argb(150, 255, 220, 120));
+            paint.setPathEffect(new DashPathEffect(new float[] { dp(5), dp(5) }, 0));
+            canvas.drawLine(cx, by, cx, by - stemLen - dp(8), paint);
+            paint.setPathEffect(null);
+            float arcRadius = Math.min(dp(48), stemLen * 0.55f);
+            canvas.drawArc(new RectF(cx - arcRadius, by - arcRadius, cx + arcRadius, by + arcRadius), -90, (float)angle, false, paint);
+
             paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeWidth(shaftWidth + dp(2));
+            paint.setColor(Color.rgb(17, 14, 22));
             canvas.drawLine(cx, by, cx + dx, by - dy, paint);
+            paint.setStrokeWidth(shaftWidth);
+            paint.setColor(Color.rgb(110, 190, 225));
+            canvas.drawLine(cx, by, cx + dx, by - dy, paint);
+
+            paint.setStyle(Paint.Style.FILL);
             paint.setColor(pink);
             canvas.drawCircle(cx, by, ballR, paint);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(dp(2));
-            paint.setColor(Color.rgb(255, 220, 120));
-            canvas.drawLine(cx, by, cx, by - stemLen * 0.55f, paint);
-            canvas.drawLine(cx, by, cx + dx, by - dy, paint);
+            paint.setStrokeWidth(dp(1));
+            paint.setColor(Color.rgb(250, 190, 220));
+            canvas.drawCircle(cx, by, ballR, paint);
+
             paint.setStyle(Paint.Style.FILL);
-            paint.setTextSize(dp(15));
+            paint.setTextSize(dp(14));
             paint.setColor(text);
-            canvas.drawText("Probe/stylus clearance", dp(14), dp(24), paint);
+            canvas.drawText("Live probe clearance preview", dp(14), dp(22), paint);
             paint.setColor(muted);
-            canvas.drawText(String.format(Locale.UK, "Max from normal %.3f°", angle), dp(14), dp(45), paint);
-            canvas.drawText(String.format(Locale.UK, "Ball Ø%.3f  Stem Ø%.3f  Length %.3f", probeDia, shaftDia, length), dp(14), dp(66), paint);
+            paint.setTextSize(dp(12));
+            canvas.drawText(String.format(Locale.UK, "Maximum from normal %.3f°", angle), dp(14), dp(42), paint);
+            canvas.drawText(String.format(Locale.UK, "Ball Ø%.3f   Stem Ø%.3f", probeDia, shaftDia), dp(14), dp(60), paint);
+            canvas.drawText(String.format(Locale.UK, "Usable length %.3f", length), dp(14), dp(78), paint);
         }
     }
 
