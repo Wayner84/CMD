@@ -3,16 +3,12 @@ package com.coordinate.measuring.dreams;
 import android.app.Activity;
 import android.content.Intent;
 import android.database.Cursor;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
-import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.InputType;
@@ -43,8 +39,6 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final String TAG = "CMD";
     private static final int REQUEST_OPEN_MODEL = 42;
-    private static final int REQUEST_OPEN_DRAWING = 43;
-    private static final int REQUEST_CAPTURE_DRAWING = 44;
     private static final int MODEL_MAX_BYTES = 24 * 1024 * 1024;
 
     private final int bg = Color.rgb(18, 16, 23);
@@ -57,10 +51,7 @@ public class MainActivity extends Activity {
     private LinearLayout root;
     private VisualiserView visualiser;
     private ModelMeasureView modelView;
-    private DrawingBalloonView drawingView;
     private TextView modelStatus;
-    private TextView drawingStatus;
-    private final ArrayList<BalloonRecord> balloonRecords = new ArrayList<>();
     private SeekBar xySeek;
     private SeekBar zSeek;
     private TextView xyValue;
@@ -75,7 +66,6 @@ public class MainActivity extends Activity {
     private boolean inIsoTolerance = false;
     private boolean inTrigCalculator = false;
     private boolean inProbeAngle = false;
-    private boolean inDrawingBalloon = false;
 
     private double xyDeg = 45.0;
     private double zDeg = 20.0;
@@ -102,7 +92,6 @@ public class MainActivity extends Activity {
         inIsoTolerance = false;
         inTrigCalculator = false;
         inProbeAngle = false;
-        inDrawingBalloon = false;
         setBaseRoot();
         ImageView logo = new ImageView(this);
         logo.setImageResource(getResources().getIdentifier("ic_cmd_logo", "drawable", getPackageName()));
@@ -129,12 +118,6 @@ public class MainActivity extends Activity {
         modelLp.setMargins(0, dp(10), 0, 0);
         root.addView(modelMeasure, modelLp);
 
-        Button drawing = button("Drawing Ballooning");
-        drawing.setOnClickListener(v -> showDrawingBallooning());
-        LinearLayout.LayoutParams drawingLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
-        drawingLp.setMargins(0, dp(10), 0, 0);
-        root.addView(drawing, drawingLp);
-
         Button tolerances = button("ISO Tolerance Tables");
         tolerances.setOnClickListener(v -> showIsoTolerances());
         LinearLayout.LayoutParams tolLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
@@ -153,7 +136,7 @@ public class MainActivity extends Activity {
         probeLp.setMargins(0, dp(10), 0, 0);
         root.addView(probe, probeLp);
 
-        TextView more = label("Import OBJ/STL models for quick measurements, balloon engineering drawings, visualise IJK angles, check ISO limits and fits, solve shop trigonometry, or check probe/stylus clearance angles.");
+        TextView more = label("Import OBJ/STL models for quick measurements, visualise IJK angles, check ISO limits and fits, solve shop trigonometry, or check probe/stylus clearance angles.");
         more.setPadding(0, dp(18), 0, 0);
         root.addView(more);
     }
@@ -163,7 +146,6 @@ public class MainActivity extends Activity {
         inIsoTolerance = false;
         inTrigCalculator = false;
         inProbeAngle = false;
-        inDrawingBalloon = false;
         setBaseRoot();
         Button back = button("← Back to tools");
         back.setOnClickListener(v -> showHome());
@@ -771,184 +753,6 @@ public class MainActivity extends Activity {
     }
 
 
-    private void showDrawingBallooning() {
-        visualiser = null;
-        modelView = null;
-        inModelMeasure = false;
-        inIsoTolerance = false;
-        inTrigCalculator = false;
-        inProbeAngle = false;
-        inDrawingBalloon = true;
-        setBaseRoot();
-
-        Button back = button("← Back to tools");
-        back.setOnClickListener(v -> showHome());
-        root.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-
-        TextView title = title("Drawing Ballooning");
-        root.addView(title);
-
-        LinearLayout tabs = row();
-        Button drawingTab = button("Drawing / Edit");
-        Button tableTab = button("Table");
-        tabs.addView(drawingTab, weight());
-        tabs.addView(tableTab, weight());
-        root.addView(tabs);
-
-        drawingView = new DrawingBalloonView(this);
-        drawingView.setBackgroundColor(surface);
-        root.addView(drawingView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-
-        ScrollView controlsScroll = new ScrollView(this);
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        controls.setPadding(0, dp(8), 0, dp(8));
-        controlsScroll.addView(controls);
-        root.addView(controlsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(290)));
-
-        Runnable showDrawingControls = () -> {
-            controls.removeAllViews();
-            LinearLayout imageRow = row();
-            Button load = button("Load drawing image");
-            Button camera = button("Take photo");
-            load.setOnClickListener(v -> openDrawingPicker());
-            camera.setOnClickListener(v -> captureDrawingPhoto());
-            imageRow.addView(load, weight());
-            imageRow.addView(camera, weight());
-            controls.addView(imageRow);
-
-            LinearLayout modeRow = row();
-            Button vLine = button("Tap vertical grid");
-            Button hLine = button("Tap horizontal grid");
-            Button addDim = button("Add dimension");
-            vLine.setOnClickListener(v -> { drawingView.mode = DrawingBalloonView.MODE_VGRID; updateDrawingStatus(); });
-            hLine.setOnClickListener(v -> { drawingView.mode = DrawingBalloonView.MODE_HGRID; updateDrawingStatus(); });
-            addDim.setOnClickListener(v -> {
-                if (!drawingView.gridReady()) { updateDrawingStatus("Add vertical + horizontal grid lines and labels before dimensioning."); return; }
-                drawingView.mode = DrawingBalloonView.MODE_DIMENSION;
-                updateDrawingStatus("Drag a box around the dimension text. Use nudge/resize buttons after adding if needed.");
-            });
-            modeRow.addView(vLine, weight()); modeRow.addView(hLine, weight()); modeRow.addView(addDim, weight());
-            controls.addView(modeRow);
-
-            LinearLayout labels = row();
-            EditText cols = textInput("A,B,C,D");
-            EditText rows = textInput("1,2,3,4");
-            cols.setText(drawingView.columnLabels);
-            rows.setText(drawingView.rowLabels);
-            labels.addView(wrap("Column letters", cols), weight());
-            labels.addView(wrap("Row numbers", rows), weight());
-            controls.addView(labels);
-            Button applyLabels = button("Apply grid labels");
-            applyLabels.setOnClickListener(v -> { drawingView.columnLabels = cols.getText().toString(); drawingView.rowLabels = rows.getText().toString(); drawingView.invalidate(); updateDrawingStatus(); });
-            controls.addView(applyLabels, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
-
-            LinearLayout editRow = row();
-            Button undo = button("Undo line/balloon");
-            Button clear = button("Clear drawing setup");
-            undo.setOnClickListener(v -> { drawingView.undoLast(); updateDrawingStatus(); });
-            clear.setOnClickListener(v -> { balloonRecords.clear(); drawingView.clearSetup(); updateDrawingStatus(); });
-            editRow.addView(undo, weight()); editRow.addView(clear, weight());
-            controls.addView(editRow);
-
-            LinearLayout adjust = row();
-            Button smaller = button("Box -");
-            Button larger = button("Box +");
-            Button left = button("◀");
-            Button right = button("▶");
-            smaller.setOnClickListener(v -> drawingView.adjustSelected(-4, 0, 0));
-            larger.setOnClickListener(v -> drawingView.adjustSelected(4, 0, 0));
-            left.setOnClickListener(v -> drawingView.adjustSelected(0, -4, 0));
-            right.setOnClickListener(v -> drawingView.adjustSelected(0, 4, 0));
-            adjust.addView(smaller, weight()); adjust.addView(larger, weight()); adjust.addView(left, weight()); adjust.addView(right, weight());
-            controls.addView(adjust);
-
-            drawingStatus = label("");
-            drawingStatus.setPadding(0, dp(8), 0, 0);
-            controls.addView(drawingStatus);
-            TextView hint = label("Workflow: load/take a drawing image, tap grid lines, enter column/row labels, then add dimensions by dragging boxes. Pan with one finger outside add modes; pinch to zoom. Grid is faint during dimensioning.");
-            hint.setPadding(0, dp(8), 0, 0);
-            controls.addView(hint);
-            updateDrawingStatus();
-        };
-
-        Runnable showTableControls = () -> {
-            controls.removeAllViews();
-            TextView hint = label("Editable balloon table. OCR is seeded as manual text in this dependency-light release, so correct or type the drawing callout, tolerances, result, and GD&T details here.");
-            controls.addView(hint);
-            for (BalloonRecord r : balloonRecords) controls.addView(recordEditor(r));
-            if (balloonRecords.isEmpty()) controls.addView(label("No balloons yet. Use Drawing / Edit → Add dimension."));
-        };
-        drawingTab.setOnClickListener(v -> showDrawingControls.run());
-        tableTab.setOnClickListener(v -> showTableControls.run());
-        showDrawingControls.run();
-    }
-
-    private View recordEditor(BalloonRecord r) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(6), dp(8), dp(6), dp(8));
-        box.setBackgroundColor(surface);
-        TextView heading = label("Balloon " + r.number + "   Grid " + r.gridRef);
-        heading.setTextColor(text);
-        box.addView(heading);
-        EditText what = textInput("dimension / note"); what.setText(r.what);
-        EditText plus = textInput("+tol"); plus.setText(r.plusTol);
-        EditText minus = textInput("-tol"); minus.setText(r.minusTol);
-        EditText result = textInput("result"); result.setText(r.result);
-        EditText gdt = textInput("GD&T type / note"); gdt.setText(r.gdtType);
-        Button isGdt = button(r.isGdt ? "✓ GD&T" : "Linear/tolerance");
-        isGdt.setOnClickListener(v -> { r.isGdt = !r.isGdt; isGdt.setText(r.isGdt ? "✓ GD&T" : "Linear/tolerance"); });
-        TextWatcher watcher = new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
-            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
-            @Override public void afterTextChanged(Editable e) { r.what = what.getText().toString(); r.plusTol = plus.getText().toString(); r.minusTol = minus.getText().toString(); r.result = result.getText().toString(); r.gdtType = gdt.getText().toString(); }
-        };
-        what.addTextChangedListener(watcher); plus.addTextChangedListener(watcher); minus.addTextChangedListener(watcher); result.addTextChangedListener(watcher); gdt.addTextChangedListener(watcher);
-        box.addView(wrap("What it is / OCR text", what));
-        LinearLayout tolRow = row(); tolRow.addView(wrap("+tol", plus), weight()); tolRow.addView(wrap("-tol", minus), weight()); tolRow.addView(wrap("Result", result), weight()); box.addView(tolRow);
-        LinearLayout gdtRow = row(); gdtRow.addView(isGdt, weight()); gdtRow.addView(wrap("GD&T", gdt), weight()); box.addView(gdtRow);
-        return box;
-    }
-
-    private void openDrawingPicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        startActivityForResult(intent, REQUEST_OPEN_DRAWING);
-    }
-
-    private void captureDrawingPhoto() {
-        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        try { startActivityForResult(intent, REQUEST_CAPTURE_DRAWING); }
-        catch (Exception ex) { updateDrawingStatus("No camera app available: " + ex.getMessage()); }
-    }
-
-    private void loadDrawingUri(Uri uri) {
-        try {
-            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (Exception ignored) {}
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
-            Bitmap bmp = BitmapFactory.decodeStream(in);
-            if (bmp == null) throw new Exception("image could not be decoded");
-            if (drawingView != null) drawingView.setDrawing(bmp);
-            updateDrawingStatus("Loaded " + displayName(uri) + ". Add drawing grid lines before dimensioning.");
-        } catch (Exception ex) {
-            Log.e(TAG, "Could not load drawing", ex);
-            updateDrawingStatus("Could not load drawing: " + ex.getMessage());
-        }
-    }
-
-    private void updateDrawingStatus() { updateDrawingStatus(null); }
-    private void updateDrawingStatus(String extra) {
-        if (drawingStatus == null || drawingView == null) return;
-        String mode = drawingView.modeName();
-        String grid = drawingView.gridReady() ? "Grid ready" : "Grid required";
-        String image = drawingView.bitmap == null ? "No drawing image loaded" : "Drawing loaded";
-        drawingStatus.setText(image + "\n" + grid + " · " + mode + "\nBalloons: " + balloonRecords.size() + (extra == null ? "" : "\n" + extra));
-    }
-
     private void openModelPicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -966,16 +770,6 @@ public class MainActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) {}
             loadModelUri(uri);
-        } else if (requestCode == REQUEST_OPEN_DRAWING && resultCode == RESULT_OK && data != null && data.getData() != null) {
-            loadDrawingUri(data.getData());
-        } else if (requestCode == REQUEST_CAPTURE_DRAWING && resultCode == RESULT_OK && data != null) {
-            Object photo = data.getExtras() == null ? null : data.getExtras().get("data");
-            if (photo instanceof Bitmap && drawingView != null) {
-                drawingView.setDrawing((Bitmap)photo);
-                updateDrawingStatus("Camera photo loaded. Add drawing grid lines before dimensioning.");
-            } else {
-                updateDrawingStatus("Camera returned no image; use Load drawing image if this phone only saves full-resolution captures.");
-            }
         }
     }
 
@@ -1161,7 +955,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (visualiser != null || inModelMeasure || inIsoTolerance || inTrigCalculator || inProbeAngle || inDrawingBalloon) {
+        if (visualiser != null || inModelMeasure || inIsoTolerance || inTrigCalculator || inProbeAngle) {
             showHome();
         } else {
             super.onBackPressed();
@@ -1676,128 +1470,6 @@ public class MainActivity extends Activity {
         }
     }
 
-
-    static class BalloonRecord {
-        int number;
-        RectF rect;
-        String what = "OCR/manual text";
-        String plusTol = "";
-        String minusTol = "";
-        String result = "";
-        String gridRef = "";
-        boolean isGdt = false;
-        String gdtType = "position / flatness / parallelism";
-        BalloonRecord(int number, RectF rect, String gridRef) { this.number = number; this.rect = rect; this.gridRef = gridRef; }
-    }
-
-    public class DrawingBalloonView extends View {
-        static final int MODE_PAN = 0, MODE_VGRID = 1, MODE_HGRID = 2, MODE_DIMENSION = 3;
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        Bitmap bitmap;
-        int mode = MODE_PAN;
-        String columnLabels = "A,B,C,D";
-        String rowLabels = "1,2,3,4";
-        ArrayList<Float> verticals = new ArrayList<>();
-        ArrayList<Float> horizontals = new ArrayList<>();
-        float scale = 1f, panX = 0f, panY = 0f;
-        float lastX, lastY, lastDist = 0f;
-        RectF draft;
-        int selected = -1;
-
-        public DrawingBalloonView(Activity context) { super(context); }
-        void setDrawing(Bitmap bmp) { bitmap = bmp; fit(); invalidate(); }
-        void fit() {
-            if (bitmap == null || getWidth() == 0 || getHeight() == 0) return;
-            scale = Math.min(getWidth() / (float)bitmap.getWidth(), getHeight() / (float)bitmap.getHeight());
-            if (scale <= 0) scale = 1f;
-            panX = (getWidth() - bitmap.getWidth() * scale) / 2f;
-            panY = (getHeight() - bitmap.getHeight() * scale) / 2f;
-        }
-        @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { super.onSizeChanged(w,h,oldw,oldh); if (oldw == 0 && oldh == 0) fit(); }
-        String modeName() { if (mode == MODE_VGRID) return "Tap vertical grid lines"; if (mode == MODE_HGRID) return "Tap horizontal grid lines"; if (mode == MODE_DIMENSION) return "Drag dimension box"; return "Pan/zoom"; }
-        boolean gridReady() { return verticals.size() >= 1 && horizontals.size() >= 1 && labels(columnLabels).length > 0 && labels(rowLabels).length > 0; }
-        void clearSetup() { verticals.clear(); horizontals.clear(); draft = null; selected = -1; mode = MODE_PAN; invalidate(); }
-        void undoLast() {
-            if (mode == MODE_HGRID && horizontals.size() > 0) horizontals.remove(horizontals.size()-1);
-            else if (mode == MODE_VGRID && verticals.size() > 0) verticals.remove(verticals.size()-1);
-            else if (balloonRecords.size() > 0) balloonRecords.remove(balloonRecords.size()-1);
-            invalidate();
-        }
-        void adjustSelected(float sizeDelta, float dx, float dy) {
-            if (selected < 0 || selected >= balloonRecords.size()) return;
-            RectF r = balloonRecords.get(selected).rect;
-            r.inset(-sizeDelta, -sizeDelta); r.offset(dx / scale, dy / scale);
-            balloonRecords.get(selected).gridRef = gridRef(r.centerX(), r.centerY());
-            invalidate();
-        }
-        @Override protected void onDraw(Canvas canvas) {
-            canvas.drawColor(surface);
-            if (bitmap == null) {
-                paint.setColor(muted); paint.setTextSize(dp(16));
-                canvas.drawText("Load or take a drawing image to begin.", dp(18), dp(40), paint); return;
-            }
-            canvas.save(); canvas.translate(panX, panY); canvas.scale(scale, scale); canvas.drawBitmap(bitmap, 0, 0, paint);
-            drawGrid(canvas); drawBalloons(canvas); if (draft != null) drawRect(canvas, draft, Color.rgb(255,220,120), 2f / scale); canvas.restore();
-        }
-        private void drawGrid(Canvas c) {
-            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2f / scale);
-            paint.setColor(mode == MODE_DIMENSION ? Color.argb(70, 214,107,160) : Color.argb(185, 214,107,160));
-            for (float x: verticals) c.drawLine(x, 0, x, bitmap.getHeight(), paint);
-            for (float y: horizontals) c.drawLine(0, y, bitmap.getWidth(), y, paint);
-            paint.setStyle(Paint.Style.FILL); paint.setTextSize(18f / scale); paint.setColor(Color.argb(210,247,236,243));
-            String[] cols = labels(columnLabels); for (int i=0;i<cols.length && i<verticals.size();i++) c.drawText(cols[i], verticals.get(i)+4/scale, 20/scale, paint);
-            String[] rows = labels(rowLabels); for (int i=0;i<rows.length && i<horizontals.size();i++) c.drawText(rows[i], 4/scale, horizontals.get(i)-4/scale, paint);
-        }
-        private void drawBalloons(Canvas c) {
-            for (int idx=0; idx<balloonRecords.size(); idx++) {
-                BalloonRecord r = balloonRecords.get(idx); drawRect(c, r.rect, idx==selected ? Color.rgb(255,220,120) : pink, 2f / scale);
-                float bx = r.rect.right + 18f / scale, by = r.rect.top - 10f / scale, rad = 15f / scale;
-                paint.setStyle(Paint.Style.FILL); paint.setColor(Color.argb(235, 18,16,23)); c.drawCircle(bx, by, rad, paint);
-                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2f/scale); paint.setColor(pink); c.drawCircle(bx, by, rad, paint);
-                paint.setStyle(Paint.Style.FILL); paint.setColor(text); paint.setTextSize(15f / scale); paint.setTextAlign(Paint.Align.CENTER); c.drawText(String.valueOf(r.number), bx, by + 5f/scale, paint); paint.setTextAlign(Paint.Align.LEFT);
-            }
-        }
-        private void drawRect(Canvas c, RectF r, int colour, float sw) { paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(sw); paint.setColor(colour); c.drawRect(r, paint); paint.setStyle(Paint.Style.FILL); }
-        private float imgX(float sx) { return (sx - panX) / scale; }
-        private float imgY(float sy) { return (sy - panY) / scale; }
-        private String[] labels(String s) { return s == null || s.trim().isEmpty() ? new String[0] : s.trim().split("\\s*,\\s*"); }
-        private String gridRef(float x, float y) {
-            String[] cols = labels(columnLabels), rows = labels(rowLabels);
-            int ci = nearestIndex(verticals, x), ri = nearestIndex(horizontals, y);
-            String c = (ci >= 0 && ci < cols.length) ? cols[ci] : "?";
-            String r = (ri >= 0 && ri < rows.length) ? rows[ri] : "?";
-            return c + r;
-        }
-        private int nearestIndex(ArrayList<Float> vals, float v) { int best=-1; float bd=Float.MAX_VALUE; for (int i=0;i<vals.size();i++){ float d=Math.abs(vals.get(i)-v); if(d<bd){bd=d; best=i;}} return best; }
-        private float spacing(ArrayList<Float> vals) { if (vals.size()<2) return 50f; ArrayList<Float> copy = new ArrayList<>(vals); java.util.Collections.sort(copy); return Math.max(20f, Math.abs(copy.get(1)-copy.get(0))); }
-        @Override public boolean onTouchEvent(MotionEvent e) {
-            if (bitmap == null) return true;
-            if (e.getPointerCount() == 2) {
-                float dx = e.getX(0)-e.getX(1), dy = e.getY(0)-e.getY(1), dist = (float)Math.sqrt(dx*dx+dy*dy);
-                if (e.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN) lastDist = dist;
-                else if (e.getActionMasked() == MotionEvent.ACTION_MOVE && lastDist > 0) { float f = dist / lastDist; scale = Math.max(0.15f, Math.min(8f, scale*f)); lastDist = dist; invalidate(); }
-                return true;
-            }
-            if (e.getAction() == MotionEvent.ACTION_DOWN) { lastX=e.getX(); lastY=e.getY(); if (mode==MODE_DIMENSION) draft = new RectF(imgX(lastX), imgY(lastY), imgX(lastX), imgY(lastY)); return true; }
-            if (e.getAction() == MotionEvent.ACTION_MOVE) {
-                if (mode==MODE_DIMENSION && draft != null) { draft.right=imgX(e.getX()); draft.bottom=imgY(e.getY()); invalidate(); }
-                else if (mode==MODE_PAN) { panX += e.getX()-lastX; panY += e.getY()-lastY; lastX=e.getX(); lastY=e.getY(); invalidate(); }
-                return true;
-            }
-            if (e.getAction() == MotionEvent.ACTION_UP) {
-                float x=imgX(e.getX()), y=imgY(e.getY());
-                if (mode==MODE_VGRID) { verticals.add(x); java.util.Collections.sort(verticals); invalidate(); updateDrawingStatus(); }
-                else if (mode==MODE_HGRID) { horizontals.add(y); java.util.Collections.sort(horizontals); invalidate(); updateDrawingStatus(); }
-                else if (mode==MODE_DIMENSION && draft != null) {
-                    draft.sort(); if (draft.width() < 8) draft.right = draft.left + spacing(verticals) * 0.4f; if (draft.height() < 8) draft.bottom = draft.top + spacing(horizontals) * 0.35f;
-                    BalloonRecord r = new BalloonRecord(balloonRecords.size()+1, new RectF(draft), gridRef(draft.centerX(), draft.centerY()));
-                    balloonRecords.add(r); selected = balloonRecords.size()-1; draft = null; mode = MODE_PAN; invalidate(); updateDrawingStatus("Balloon " + r.number + " added at grid " + r.gridRef + ". Open Table to edit OCR/text and tolerances.");
-                }
-                return true;
-            }
-            return true;
-        }
-    }
 
     public class VisualiserView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
